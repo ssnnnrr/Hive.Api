@@ -1,0 +1,6 @@
+@Hive.Api_HostAddress = http://localhost:5254
+
+GET {{Hive.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
