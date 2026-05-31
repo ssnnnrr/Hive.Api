@@ -38,44 +38,27 @@ namespace Hive.Api.Controllers
                         .ThenInclude(tc => tc.User)
                     .Include(g => g.Materials)
                         .ThenInclude(m => m.Creator)
+                    .Include(g => g.Materials)
+                        .ThenInclude(m => m.Task)
                     .Include(g => g.Collaborations)
                         .ThenInclude(c => c.User)
                     .Where(g => g.UserId == userId || g.Collaborations.Any(c => c.UserId == userId))
                     .ToListAsync();
 
-            var res = goals.Select(g => new GoalResponse(
-                g.Id,
-                g.Title,
-                g.Description,
-                g.MeasurableResult,
-                g.Progress,
-                g.TargetDate,
-                g.IsSolo,
-                g.Type.ToString(),
-                g.Tasks.Select(t => new TaskResponse(
-                    t.Id,
-                    t.Title,
-                    t.DueDate,
-                    t.Status.ToString(),
-                    t.GoalId,
-                    g.Title,
-                    t.CreatorId,
-                    t.AssigneeId,
-                    t.ArtifactUrl,
-                    t.StudentComment,
-                    t.TeacherComment,
-                    // ИСПРАВЛЕНИЕ ТУТ: Создаем объект UserMinimalDto вместо просто строки
-                    t.Completions.Select(tc => new UserMinimalDto(
-                        tc.User?.Username ?? "Аноним",
-                        tc.User?.AvatarUrl
-                    )).ToList(),
-                    t.Comments.Select(c => new TaskCommentDto(
-                        c.Id, c.UserId, c.User?.Username ?? "Аноним", c.User?.AvatarUrl, c.Text, c.CreatedAt
-                    )).ToList()
-                )).ToList(),
-                g.Collaborations.Select(c => {
-                    var partnerTasksDone = g.Tasks.Count(t => t.Completions.Any(tc => tc.UserId == c.UserId));
-                    double partnerProgress = g.Tasks.Any() ? (double)partnerTasksDone / g.Tasks.Count * 100 : 0;
+            var res = goals.Select(g => {
+                var activeMemberIds = g.Collaborations
+                    .Where(c => c.IsConfirmed)
+                    .Select(c => c.UserId)
+                    .ToList();
+                activeMemberIds.Add(g.UserId);
+
+                var collaborationsWithProgress = g.Collaborations.Select(c => {
+                    var partnerTasksDone = g.Tasks.Count(t =>
+                        t.Completions.Any(tc => tc.UserId == c.UserId));
+
+                    double partnerProgress = g.Tasks.Any()
+                        ? (double)partnerTasksDone / g.Tasks.Count * 100
+                        : 0;
 
                     return new GoalPartnerDto(
                         c.UserId,
@@ -85,26 +68,67 @@ namespace Hive.Api.Controllers
                         c.IsConfirmed,
                         c.IsAdmin
                     );
-                }).ToList(),
-                g.Materials.Select(m => new MaterialDto(
-                    m.Id, m.Title, m.Content, m.Type.ToString(), m.CreatorId,
-                    m.Creator?.Username ?? "Система",
-                    m.Creator?.AvatarUrl,
-                    m.CreatedAt
-                )).ToList(),
-                g.UserId
-            ));
+                }).ToList();
+
+                return new GoalResponse(
+                    g.Id,
+                    g.Title,
+                    g.Description,
+                    g.MeasurableResult,
+                    g.Progress,
+                    g.TargetDate,
+                    g.IsSolo,
+                    g.Type.ToString(),
+                    g.Tasks.Select(t => new TaskResponse(
+                        t.Id,
+                        t.Title,
+                        t.DueDate,
+                        t.Status.ToString(),
+                        t.GoalId,
+                        g.Title,
+                        t.CreatorId,
+                        t.AssigneeId,
+                        t.ArtifactUrl,
+                        t.StudentComment,
+                        t.TeacherComment,
+                        t.Completions
+                            .Where(tc => activeMemberIds.Contains(tc.UserId))
+                            .Select(tc => new UserMinimalDto(
+                                tc.User?.Username ?? "Аноним",
+                                tc.User?.AvatarUrl
+                            )).ToList(),
+                        t.Comments.Select(c => new TaskCommentDto(
+                            c.Id, c.UserId, c.User?.Username ?? "Аноним",
+                            c.User?.AvatarUrl, c.Text, c.CreatedAt
+                        )).ToList(),
+                        g.IsSolo
+                    )).ToList(),
+                    collaborationsWithProgress,
+                    g.Materials.Select(m => new MaterialDto(
+                        m.Id,
+                        m.Title,
+                        m.Content,
+                        m.Type.ToString(),
+                        m.CreatorId,
+                        m.Creator?.Username ?? "Система",
+                        m.Creator?.AvatarUrl,
+                        m.CreatedAt,
+                        (int?)m.TaskId,
+                        m.Task?.Title
+                    )).ToList(),
+                    g.UserId
+                );
+            });
 
             return Ok(res);
         }
 
-
         [HttpDelete("{goalId}/members/{memberId}")]
         public async Task<IActionResult> RemoveMember(long goalId, long memberId)
         {
-            // 1. Находим оригинальную цель со всеми потрохами
             var originalGoal = await _context.Goals
-                .Include(g => g.Tasks)
+                .Include(g => g.Tasks).ThenInclude(t => t.Comments)
+                .Include(g => g.Tasks).ThenInclude(t => t.Completions)
                 .Include(g => g.Materials)
                 .Include(g => g.Collaborations)
                 .FirstOrDefaultAsync(g => g.Id == goalId);
@@ -113,89 +137,102 @@ namespace Hive.Api.Controllers
                 return Forbid("Только создатель может исключать участников.");
 
             var collaboration = originalGoal.Collaborations.FirstOrDefault(c => c.UserId == memberId);
-            if (collaboration == null) return NotFound("Участник не найден в этой цели.");
+            if (collaboration == null) return NotFound("Участник не найден.");
 
-            // 2. СОЗДАЕМ «КСЕРОКОПИЮ» (ФОРК) ДЛЯ УДАЛЯЕМОГО УЧАСТНИКА
-            var forkedGoal = new Goal
+            if (collaboration.IsConfirmed)
             {
-                UserId = memberId, // Теперь он хозяин
-                Title = originalGoal.Title + " (Личный)",
-                Description = originalGoal.Description,
-                MeasurableResult = originalGoal.MeasurableResult,
-                TargetDate = originalGoal.TargetDate,
-                IsSolo = true, // Становится личным
-                Type = GoalType.Social,
-                Progress = 0, // Прогресс пересчитается ниже
-                CreatedAt = DateTime.UtcNow
-            };
-            _context.Goals.Add(forkedGoal);
-            await _context.SaveChangesAsync();
-
-            // 3. КОПИРУЕМ МАТЕРИАЛЫ
-            foreach (var material in originalGoal.Materials)
-            {
-                _context.Materials.Add(new Material
+                var forkedGoal = new Goal
                 {
-                    GoalId = forkedGoal.Id,
-                    Title = material.Title,
-                    Content = material.Content,
-                    Type = material.Type,
-                    CreatorId = material.CreatorId, // Кто создал оригинал, тот и числится автором
-                    CreatedAt = material.CreatedAt
-                });
-            }
-
-            // 4. КОПИРУЕМ ЗАДАЧИ И ВЫПОЛНЕНИЕ
-            foreach (var task in originalGoal.Tasks)
-            {
-                var newTask = new HiveTask
-                {
-                    GoalId = forkedGoal.Id,
-                    Title = task.Title,
-                    DueDate = task.DueDate,
-                    Status = task.Status,
-                    CreatorId = task.CreatorId
+                    UserId = memberId,
+                    Title = originalGoal.Title + " (Личный)",
+                    Description = originalGoal.Description,
+                    MeasurableResult = originalGoal.MeasurableResult,
+                    TargetDate = originalGoal.TargetDate,
+                    IsSolo = true,
+                    Type = GoalType.Social,
+                    CreatedAt = DateTime.UtcNow
                 };
-                _context.Tasks.Add(newTask);
-                await _context.SaveChangesAsync(); // Сохраняем, чтобы получить newTask.Id
+                _context.Goals.Add(forkedGoal);
+                await _context.SaveChangesAsync();
 
-                // Копируем Комментарии к этой задаче
-                var comments = await _context.TaskComments.Where(c => c.TaskId == task.Id).ToListAsync();
-                foreach (var comm in comments)
+                foreach (var m in originalGoal.Materials)
                 {
-                    _context.TaskComments.Add(new TaskComment
+                    _context.Materials.Add(new Material
                     {
-                        TaskId = newTask.Id,
-                        UserId = comm.UserId,
-                        Text = comm.Text,
-                        CreatedAt = comm.CreatedAt
+                        GoalId = forkedGoal.Id,
+                        Title = m.Title,
+                        Content = m.Content,
+                        Type = m.Type,
+                        CreatorId = m.CreatorId,
+                        CreatedAt = m.CreatedAt,
+                        TaskId = m.TaskId
                     });
                 }
 
-                // Копируем «Галочку», если этот участник её ставил
-                var completion = await _context.TaskCompletions
-                    .FirstOrDefaultAsync(tc => tc.TaskId == task.Id && tc.UserId == memberId);
-
-                if (completion != null)
+                foreach (var oldTask in originalGoal.Tasks)
                 {
-                    _context.TaskCompletions.Add(new TaskCompletion
+                    var newTask = new HiveTask
                     {
-                        TaskId = newTask.Id,
-                        UserId = memberId,
-                        CompletedAt = completion.CompletedAt
-                    });
+                        GoalId = forkedGoal.Id,
+                        Title = oldTask.Title,
+                        DueDate = oldTask.DueDate,
+                        Status = Entities.TaskStatus.ToDo,
+                        CreatorId = oldTask.CreatorId,
+                        AssigneeId = oldTask.AssigneeId,
+                        ArtifactUrl = oldTask.ArtifactUrl,
+                        StudentComment = oldTask.StudentComment,
+                        TeacherComment = oldTask.TeacherComment
+                    };
+                    _context.Tasks.Add(newTask);
+                    await _context.SaveChangesAsync();
+
+                    foreach (var comm in oldTask.Comments)
+                    {
+                        _context.TaskComments.Add(new TaskComment
+                        {
+                            TaskId = newTask.Id,
+                            UserId = comm.UserId,
+                            Text = comm.Text,
+                            CreatedAt = comm.CreatedAt
+                        });
+                    }
+
+                    var userDone = oldTask.Completions.FirstOrDefault(tc => tc.UserId == memberId);
+                    if (userDone != null)
+                    {
+                        _context.TaskCompletions.Add(new TaskCompletion
+                        {
+                            TaskId = newTask.Id,
+                            UserId = memberId,
+                            CompletedAt = userDone.CompletedAt
+                        });
+                        newTask.Status = Entities.TaskStatus.Done;
+                    }
                 }
+
+                var memberCompletions = originalGoal.Tasks
+                    .SelectMany(t => t.Completions)
+                    .Where(tc => tc.UserId == memberId)
+                    .ToList();
+
+                _context.TaskCompletions.RemoveRange(memberCompletions);
             }
 
-            // 5. УДАЛЯЕМ УЧАСТНИКА ИЗ ОРИГИНАЛЬНОЙ ГРУППЫ
-            // Комментарии и материалы участника в ОРИГИНАЛЕ не удаляются! 
-            // Они просто остаются там как часть истории, созданная этим пользователем.
             _context.GoalCollaborations.Remove(collaboration);
 
+            var notification = await _context.Notifications
+                .FirstOrDefaultAsync(n => n.UserId == memberId &&
+                                           n.Type == "GoalInvite" &&
+                                           n.Data == goalId.ToString());
+            if (notification != null)
+            {
+                _context.Notifications.Remove(notification);
+            }
+
             await _context.SaveChangesAsync();
+
             return Ok();
         }
-
 
         [HttpPost("{id}/make-solo")]
         public async Task<IActionResult> MakeSolo(long id)
@@ -203,51 +240,202 @@ namespace Hive.Api.Controllers
             var goal = await _context.Goals
                 .Include(g => g.Collaborations)
                 .Include(g => g.Tasks)
+                    .ThenInclude(t => t.Completions)
+                .Include(g => g.Tasks)
+                    .ThenInclude(t => t.Comments)
                 .Include(g => g.Materials)
                 .FirstOrDefaultAsync(g => g.Id == id);
 
             if (goal == null || goal.UserId != CurrentUserId) return Forbid();
 
-            // 1. Находим всех партнеров, которые были в этой цели
-            var partners = goal.Collaborations.Where(c => c.UserId != CurrentUserId && c.IsConfirmed).ToList();
+            var confirmedPartners = goal.Collaborations
+                .Where(c => c.UserId != CurrentUserId && c.IsConfirmed)
+                .ToList();
 
-            // 2. Для каждого партнера создаем его личную копию этой цели (Логика Fork)
-            foreach (var p in partners)
+            var unconfirmedPartners = goal.Collaborations
+                .Where(c => c.UserId != CurrentUserId && !c.IsConfirmed)
+                .ToList();
+
+            foreach (var p in confirmedPartners)
             {
                 var newGoal = new Goal
                 {
                     UserId = p.UserId,
                     Title = goal.Title + " (Личная)",
                     Description = goal.Description,
+                    MeasurableResult = goal.MeasurableResult,
                     IsSolo = true,
                     Type = GoalType.Social,
                     TargetDate = goal.TargetDate,
-                    Progress = 0, // У нового владельца свой путь
+                    Progress = 0,
                     CreatedAt = DateTime.UtcNow
                 };
                 _context.Goals.Add(newGoal);
                 await _context.SaveChangesAsync();
 
-                // Копируем задачи
+                foreach (var m in goal.Materials)
+                {
+                    _context.Materials.Add(new Material
+                    {
+                        GoalId = newGoal.Id,
+                        Title = m.Title,
+                        Content = m.Content,
+                        Type = m.Type,
+                        CreatorId = m.CreatorId,
+                        CreatedAt = m.CreatedAt,
+                        TaskId = m.TaskId
+                    });
+                }
+
                 foreach (var t in goal.Tasks)
                 {
-                    _context.Tasks.Add(new HiveTask
+                    var newTask = new HiveTask
                     {
                         GoalId = newGoal.Id,
                         Title = t.Title,
                         DueDate = t.DueDate,
                         CreatorId = p.UserId,
-                        Status = Entities.TaskStatus.ToDo
-                    });
+                        Status = Entities.TaskStatus.ToDo,
+                        AssigneeId = t.AssigneeId,
+                        ArtifactUrl = t.ArtifactUrl,
+                        StudentComment = t.StudentComment,
+                        TeacherComment = t.TeacherComment
+                    };
+                    _context.Tasks.Add(newTask);
+                    await _context.SaveChangesAsync();
+
+                    foreach (var comm in t.Comments)
+                    {
+                        _context.TaskComments.Add(new TaskComment
+                        {
+                            TaskId = newTask.Id,
+                            UserId = comm.UserId,
+                            Text = comm.Text,
+                            CreatedAt = comm.CreatedAt
+                        });
+                    }
+
+                    var partnerCompletion = t.Completions.FirstOrDefault(tc => tc.UserId == p.UserId);
+                    if (partnerCompletion != null)
+                    {
+                        _context.TaskCompletions.Add(new TaskCompletion
+                        {
+                            TaskId = newTask.Id,
+                            UserId = p.UserId,
+                            CompletedAt = partnerCompletion.CompletedAt
+                        });
+                        newTask.Status = Entities.TaskStatus.Done;
+                    }
                 }
             }
 
-            // 3. Оригинальную цель делаем личной для создателя
+            var allPartnerIds = goal.Collaborations
+                .Where(c => c.UserId != CurrentUserId)
+                .Select(c => c.UserId)
+                .ToList();
+
+            var completionsToRemove = goal.Tasks
+                .SelectMany(t => t.Completions)
+                .Where(tc => allPartnerIds.Contains(tc.UserId))
+                .ToList();
+
+            _context.TaskCompletions.RemoveRange(completionsToRemove);
+
+            foreach (var p in unconfirmedPartners)
+            {
+                var notification = await _context.Notifications
+                    .FirstOrDefaultAsync(n => n.UserId == p.UserId &&
+                                               n.Type == "GoalInvite" &&
+                                               n.Data == id.ToString());
+                if (notification != null)
+                {
+                    _context.Notifications.Remove(notification);
+                }
+            }
+
             goal.IsSolo = true;
-            _context.GoalCollaborations.RemoveRange(goal.Collaborations.Where(c => c.UserId != CurrentUserId));
+
+            _context.GoalCollaborations.RemoveRange(
+                goal.Collaborations.Where(c => c.UserId != CurrentUserId)
+            );
 
             await _context.SaveChangesAsync();
             return Ok();
+        }
+
+        [HttpPost("materials/upload")]
+        public async Task<IActionResult> UploadMaterial([FromForm] UploadMaterialRequest req)
+        {
+            var goal = await _context.Goals
+                .Include(g => g.Collaborations)
+                .FirstOrDefaultAsync(g => g.Id == req.GoalId);
+
+            if (goal == null) return NotFound();
+
+            bool isPartner = goal.Collaborations.Any(c => c.UserId == CurrentUserId && c.IsConfirmed);
+            if (goal.UserId != CurrentUserId && !isPartner) return Forbid();
+
+            string fileUrl = "";
+            if (req.File != null && req.File.Length > 0)
+            {
+                var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "materials");
+                if (!Directory.Exists(uploadsFolder))
+                    Directory.CreateDirectory(uploadsFolder);
+
+                var uniqueFileName = $"{Guid.NewGuid()}_{req.File.FileName}";
+                var filePath = Path.Combine(uploadsFolder, uniqueFileName);
+
+                using (var stream = new FileStream(filePath, FileMode.Create))
+                {
+                    await req.File.CopyToAsync(stream);
+                }
+
+                fileUrl = $"/uploads/materials/{uniqueFileName}";
+            }
+            else if (!string.IsNullOrEmpty(req.Content))
+            {
+                fileUrl = req.Content;
+            }
+            else
+            {
+                return BadRequest("Необходимо предоставить файл или ссылку");
+            }
+
+            var material = new Material
+            {
+                GoalId = req.GoalId,
+                Title = req.Title,
+                Content = fileUrl,
+                Type = req.File != null ? MaterialType.File : MaterialType.Link,
+                TaskId = req.TaskId,
+                CreatorId = CurrentUserId,
+                CreatedAt = DateTime.UtcNow
+            };
+
+            _context.Materials.Add(material);
+            await _context.SaveChangesAsync();
+
+            string? taskTitle = null;
+            if (req.TaskId.HasValue)
+            {
+                var task = await _context.Tasks.FindAsync(req.TaskId.Value);
+                taskTitle = task?.Title;
+            }
+
+            var user = await _context.Users.FindAsync(CurrentUserId);
+
+            return Ok(new MaterialDto(
+                material.Id,
+                material.Title,
+                material.Content,
+                material.Type.ToString(),
+                material.CreatorId,
+                user?.Username ?? "Система",
+                user?.AvatarUrl,
+                material.CreatedAt,
+                (int?)material.TaskId,
+                taskTitle
+            ));
         }
 
         [HttpPost]
@@ -271,7 +459,6 @@ namespace Hive.Api.Controllers
             _context.Goals.Add(goal);
             await _context.SaveChangesAsync();
 
-            // Если это Группа или Обмен, создатель получает статус админа/учителя
             _context.GoalCollaborations.Add(new GoalCollaboration
             {
                 GoalId = goal.Id,
@@ -296,8 +483,6 @@ namespace Hive.Api.Controllers
             return Ok(goal.Id);
         }
 
-        // api/GoalsController.cs
-
         [HttpPost("materials")]
         public async Task<IActionResult> AddMaterial([FromBody] AddMaterialRequest req)
         {
@@ -307,7 +492,6 @@ namespace Hive.Api.Controllers
 
             if (goal == null) return NotFound();
 
-            // Проверка: добавлять может создатель ИЛИ подтвержденный партнер
             bool isPartner = goal.Collaborations.Any(c => c.UserId == CurrentUserId && c.IsConfirmed);
             if (goal.UserId != CurrentUserId && !isPartner) return Forbid();
 
@@ -325,7 +509,27 @@ namespace Hive.Api.Controllers
             _context.Materials.Add(material);
             await _context.SaveChangesAsync();
 
-            return Ok();
+            string? taskTitle = null;
+            if (req.TaskId.HasValue)
+            {
+                var task = await _context.Tasks.FindAsync(req.TaskId.Value);
+                taskTitle = task?.Title;
+            }
+
+            var user = await _context.Users.FindAsync(CurrentUserId);
+
+            return Ok(new MaterialDto(
+                material.Id,
+                material.Title,
+                material.Content,
+                material.Type.ToString(),
+                material.CreatorId,
+                user?.Username ?? "Система",
+                user?.AvatarUrl,
+                material.CreatedAt,
+                (int?)material.TaskId,
+                taskTitle
+            ));
         }
 
         [HttpDelete("materials/{id}")]
@@ -334,7 +538,6 @@ namespace Hive.Api.Controllers
             var material = await _context.Materials.FindAsync(id);
             if (material == null) return NotFound();
 
-            // Удалять может только автор материала ИЛИ создатель всей цели
             var goal = await _context.Goals.FindAsync(material.GoalId);
             if (material.CreatorId != CurrentUserId && goal?.UserId != CurrentUserId)
                 return Forbid("Вы не можете удалить чужой материал.");
@@ -362,8 +565,14 @@ namespace Hive.Api.Controllers
         [HttpPost("{goalId}/invite/{partnerId}")]
         public async Task<IActionResult> InvitePartner(long goalId, long partnerId)
         {
-            var goal = await _context.Goals.FindAsync(goalId);
+            var goal = await _context.Goals
+                .Include(g => g.Tasks)
+                .FirstOrDefaultAsync(g => g.Id == goalId);
+
             if (goal == null || goal.UserId != CurrentUserId) return Forbid();
+
+            var inviter = await _context.Users.FindAsync(CurrentUserId);
+            string inviterName = inviter?.Username ?? "Твой партнер";
 
             var alreadyInvited = await _context.GoalCollaborations
                 .AnyAsync(gc => gc.GoalId == goalId && gc.UserId == partnerId);
@@ -375,6 +584,28 @@ namespace Hive.Api.Controllers
                 GoalId = goalId,
                 UserId = partnerId,
                 IsConfirmed = false
+            });
+
+            string? aiSummary = await _aiService.GenerateGoalInvitationSummaryAsync(
+                inviterName,
+                goal.Title,
+                goal.Description ?? "",
+                goal.MeasurableResult ?? ""
+            );
+
+            string finalMessage = !string.IsNullOrEmpty(aiSummary)
+                ? aiSummary
+                : $"{inviterName} приглашает вас в путь: {goal.Title}. Дедлайн: {goal.TargetDate:dd.MM}. Задач: {goal.Tasks.Count}";
+
+            _context.Notifications.Add(new Notification
+            {
+                UserId = partnerId,
+                Title = "Новое приглашение 🎯",
+                Message = finalMessage,
+                CreatedAt = DateTime.UtcNow,
+                IsRead = false,
+                Type = "GoalInvite",
+                Data = goalId.ToString()
             });
 
             await _context.SaveChangesAsync();
@@ -396,7 +627,6 @@ namespace Hive.Api.Controllers
             return Ok();
         }
 
-
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(long id)
         {
@@ -415,6 +645,34 @@ namespace Hive.Api.Controllers
             if (goal == null || goal.UserId != CurrentUserId) return Forbid();
 
             goal.IsSolo = isSolo;
+            await _context.SaveChangesAsync();
+            return Ok();
+        }
+
+        [HttpPost("{goalId}/leave")]
+        public async Task<IActionResult> LeaveGoal(long goalId)
+        {
+            var collaboration = await _context.GoalCollaborations
+                .FirstOrDefaultAsync(gc => gc.GoalId == goalId && gc.UserId == CurrentUserId);
+
+            if (collaboration == null) return NotFound();
+
+            var goal = await _context.Goals
+                .Include(g => g.Tasks)
+                    .ThenInclude(t => t.Completions)
+                .FirstOrDefaultAsync(g => g.Id == goalId);
+
+            if (goal?.UserId == CurrentUserId)
+                return BadRequest("Создатель не может покинуть цель, только удалить её.");
+
+            var userCompletions = goal.Tasks
+                .SelectMany(t => t.Completions)
+                .Where(tc => tc.UserId == CurrentUserId)
+                .ToList();
+
+            _context.TaskCompletions.RemoveRange(userCompletions);
+
+            _context.GoalCollaborations.Remove(collaboration);
             await _context.SaveChangesAsync();
             return Ok();
         }

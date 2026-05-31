@@ -170,6 +170,37 @@ namespace Hive.Api.Services
         }
 
 
+        public async Task<string?> GenerateGoalInvitationSummaryAsync(string inviterName, string title, string description, string result)
+        {
+            var token = await GetTokenAsync();
+            if (string.IsNullOrEmpty(token)) return null;
+
+            var prompt = $@"Ты — дружелюбный ассистент. Составь очень краткое (20-30 слов) и вдохновляющее приглашение для пользователя.
+Имя приглашающего: {inviterName}
+Цель: {title}
+Описание: {description}
+Ожидаемый результат: {result}
+
+Инструкция: Напиши только текст приглашения и ничего лишнего. Сделай упор на то, какой крутой результат ждет участников. Не используй кавычки.";
+
+            try
+            {
+                var requestBody = new { model = "GigaChat", messages = new[] { new { role = "user", content = prompt } } };
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+                var response = await _httpClient.PostAsync("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+                    new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
+
+                var content = await response.Content.ReadAsStringAsync();
+                var resObj = JsonConvert.DeserializeObject<dynamic>(content);
+                string aiSummary = resObj?.choices[0]?.message?.content ?? "";
+
+                return aiSummary.Trim();
+            }
+            catch { return null; }
+        }
+
+
         private List<TaskDraftResponse> DangerDraft() => new() { new TaskDraftResponse("Обратиться за психологической поддержкой", DateTime.UtcNow.AddDays(1)) };
         private List<TaskDraftResponse> DefaultDraft(DateTime target) => new() { new TaskDraftResponse("Начать действовать", target.AddDays(-1)) };
     }

@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Hive.Api.Migrations
 {
     [DbContext(typeof(HiveDbContext))]
-    [Migration("20260528065541_AddIsTestAndIsRequiredToRoadmapStep")]
-    partial class AddIsTestAndIsRequiredToRoadmapStep
+    [Migration("20260531193312_AddIsReadInChat")]
+    partial class AddIsReadInChat
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -44,6 +44,9 @@ namespace Hive.Api.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsPinned")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsRead")
                         .HasColumnType("boolean");
 
                     b.Property<long>("SenderId")
@@ -356,6 +359,8 @@ namespace Hive.Api.Migrations
 
                     b.HasIndex("GoalId");
 
+                    b.HasIndex("TaskId");
+
                     b.ToTable("Materials");
                 });
 
@@ -471,6 +476,9 @@ namespace Hive.Api.Migrations
                     b.Property<bool>("IsTest")
                         .HasColumnType("boolean");
 
+                    b.Property<int>("MaxAttempts")
+                        .HasColumnType("integer");
+
                     b.Property<int>("Status")
                         .HasColumnType("integer");
 
@@ -485,6 +493,9 @@ namespace Hive.Api.Migrations
 
                     b.Property<double?>("TestScore")
                         .HasColumnType("double precision");
+
+                    b.Property<int>("UsedAttempts")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -824,9 +835,16 @@ namespace Hive.Api.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("Hive.Api.Entities.HiveTask", "Task")
+                        .WithMany()
+                        .HasForeignKey("TaskId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Creator");
 
                     b.Navigation("Goal");
+
+                    b.Navigation("Task");
                 });
 
             modelBuilder.Entity("Hive.Api.Entities.Notification", b =>
@@ -862,7 +880,7 @@ namespace Hive.Api.Migrations
             modelBuilder.Entity("Hive.Api.Entities.RoadmapStep", b =>
                 {
                     b.HasOne("Hive.Api.Entities.Group", "Group")
-                        .WithMany()
+                        .WithMany("RoadmapSteps")
                         .HasForeignKey("GroupId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -966,6 +984,8 @@ namespace Hive.Api.Migrations
                     b.Navigation("ChatMessages");
 
                     b.Navigation("Members");
+
+                    b.Navigation("RoadmapSteps");
                 });
 
             modelBuilder.Entity("Hive.Api.Entities.HiveTask", b =>

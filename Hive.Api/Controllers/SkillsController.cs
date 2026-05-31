@@ -66,22 +66,40 @@ namespace Hive.Api.Controllers
 
             var users = await usersQuery.ToListAsync();
 
+            // Внутри метода SearchPartners
             var result = users.Select(u =>
             {
                 var uTeaching = u.UserSkills.Where(s => s.Type == SkillType.Teaching).Select(s => s.SkillId).ToList();
                 var uLearning = u.UserSkills.Where(s => s.Type == SkillType.Learning).Select(s => s.SkillId).ToList();
 
-                // Synergy: Я учу тому, что он ищет + Он учит тому, что ищу я
-                bool isIdealMatch = myTeachingIds.Intersect(uLearning).Any() && uTeaching.Intersect(myLearningIds).Any();
+                // Проверяем, заполнил ли пользователь хотя бы что-то
+                bool hasAnySkills = uTeaching.Any() || uLearning.Any();
 
-                double avgRating = u.ReviewsReceived.Any() ? Math.Round(u.ReviewsReceived.Average(r => (double)r.Rating), 1) : 0;
+                // Synergy: Я учу тому, что он ищет + Он учит тому, что ищу я
+                var giveSkills = myTeachingIds.Intersect(uLearning)
+                    .Join(_context.Skills, id => id, s => s.Id, (id, s) => s.Name).ToList();
+                var takeSkills = uTeaching.Intersect(myLearningIds)
+                    .Join(_context.Skills, id => id, s => s.Id, (id, s) => s.Name).ToList();
+
+                bool isIdealMatch = giveSkills.Any() && takeSkills.Any();
 
                 return new UserDto(
-                    u.Id, u.Username, u.Email,
+                    u.Id,
+                    u.Username,
+                    u.Email,
                     isIdealMatch ? "Ideal" : "None",
-                    avgRating, u.AvatarUrl
-                );
-            }).OrderByDescending(u => u.SynergyLevel == "Ideal").ThenByDescending(u => u.Rating).ToList();
+                    u.AvatarUrl,
+                    giveSkills, // MatchTeaching
+                    takeSkills  // MatchLearning
+                )
+                {
+                    // Можно добавить в модель UserDto поле IsNewcomer или HasSkills
+                    // Если у пользователя нет навыков вообще, пометим его
+                };
+            }).OrderByDescending(u => u.SynergyLevel == "Ideal")
+   .ThenBy(u => u.MatchTeaching.Count + u.MatchLearning.Count == 0) // Пустые профили в конец, но они есть
+   .ToList();
+
 
             return Ok(result);
         }

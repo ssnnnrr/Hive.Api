@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Hive.Api.Migrations
 {
     [DbContext(typeof(HiveDbContext))]
-    [Migration("20260527224102_AddStepCommentsTable")]
-    partial class AddStepCommentsTable
+    [Migration("20260530174446_UpdateMaterials")]
+    partial class UpdateMaterials
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -356,6 +356,8 @@ namespace Hive.Api.Migrations
 
                     b.HasIndex("GoalId");
 
+                    b.HasIndex("TaskId");
+
                     b.ToTable("Materials");
                 });
 
@@ -465,8 +467,14 @@ namespace Hive.Api.Migrations
                     b.Property<string>("InstructionUrl")
                         .HasColumnType("text");
 
+                    b.Property<bool>("IsRequired")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IsTest")
                         .HasColumnType("boolean");
+
+                    b.Property<int>("MaxAttempts")
+                        .HasColumnType("integer");
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
@@ -482,6 +490,9 @@ namespace Hive.Api.Migrations
 
                     b.Property<double?>("TestScore")
                         .HasColumnType("double precision");
+
+                    b.Property<int>("UsedAttempts")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -821,9 +832,16 @@ namespace Hive.Api.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("Hive.Api.Entities.HiveTask", "Task")
+                        .WithMany()
+                        .HasForeignKey("TaskId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.Navigation("Creator");
 
                     b.Navigation("Goal");
+
+                    b.Navigation("Task");
                 });
 
             modelBuilder.Entity("Hive.Api.Entities.Notification", b =>

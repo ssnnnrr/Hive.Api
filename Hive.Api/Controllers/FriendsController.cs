@@ -29,11 +29,10 @@ namespace Hive.Api.Controllers
 
             var friends = friendships.Select(f => {
                 var u = f.UserOneId == CurrentUserId ? f.UserTwo : f.UserOne;
-                double avgRating = u!.ReviewsReceived.Any() ? Math.Round(u.ReviewsReceived.Average(r => (double)r.Rating), 1) : 0;
 
                 return new UserDto(
                     u.Id, u.Username, u.Email,
-                    "None", avgRating, u.AvatarUrl
+                    "None", u.AvatarUrl
                 );
             }).GroupBy(u => u.Id).Select(g => g.First()).ToList();
 
@@ -96,19 +95,46 @@ namespace Hive.Api.Controllers
         [HttpDelete("{friendId}")]
         public async Task<IActionResult> DeleteFriend(long friendId)
         {
+            // 1. Ищем дружбу
             var friendship = await _context.Friendships
                 .FirstOrDefaultAsync(f => (f.UserOneId == CurrentUserId && f.UserTwoId == friendId) ||
                                           (f.UserTwoId == CurrentUserId && f.UserOneId == friendId));
 
-            if (friendship == null) return NotFound();
+            // 2. Ищем общий чат (группу), где есть оба пользователя и это Solo-чат
+            var commonGroup = await _context.Groups
+                .Include(g => g.Members)
+                .Include(g => g.ChatMessages)
+                .Include(g => g.RoadmapSteps)
+                .FirstOrDefaultAsync(g => g.IsSolo &&
+                                          g.Members.Any(m => m.UserId == CurrentUserId) &&
+                                          g.Members.Any(m => m.UserId == friendId));
 
-            _context.Friendships.Remove(friendship);
+            if (friendship == null && commonGroup == null) return NotFound("Связь или чат не найдены");
 
-            // Удаляем также запрос на чат, чтобы обнулить статус отношений
+            // Удаляем дружбу, если она есть
+            if (friendship != null) _context.Friendships.Remove(friendship);
+
+            // 3. Удаляем запрос на чат (чтобы обнулить статус кнопок в UI)
             var request = await _context.ChatRequests
                 .FirstOrDefaultAsync(r => (r.SenderId == CurrentUserId && r.ReceiverId == friendId) ||
                                           (r.SenderId == friendId && r.ReceiverId == CurrentUserId));
             if (request != null) _context.ChatRequests.Remove(request);
+
+            // 4. Если чат найден — удаляем всё содержимое
+            if (commonGroup != null)
+            {
+                // Удаляем сообщения
+                if (commonGroup.ChatMessages.Any()) _context.ChatMessages.RemoveRange(commonGroup.ChatMessages);
+
+                // Удаляем задания (RoadmapSteps)
+                if (commonGroup.RoadmapSteps.Any()) _context.RoadmapSteps.RemoveRange(commonGroup.RoadmapSteps);
+
+                // Удаляем участников
+                _context.GroupMembers.RemoveRange(commonGroup.Members);
+
+                // Удаляем саму группу
+                _context.Groups.Remove(commonGroup);
+            }
 
             await _context.SaveChangesAsync();
             return Ok();

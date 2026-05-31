@@ -5,24 +5,25 @@
 namespace Hive.Api.Migrations
 {
     /// <inheritdoc />
-    public partial class AddMaterialTaskId : Migration
+    public partial class AddIsReadInChat : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.AddColumn<long>(
-                name: "TaskId",
-                table: "Materials",
-                type: "bigint",
-                nullable: true);
+            migrationBuilder.AddColumn<bool>(
+                name: "IsRead",
+                table: "ChatMessages",
+                type: "boolean",
+                nullable: false,
+                defaultValue: false);
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropColumn(
-                name: "TaskId",
-                table: "Materials");
+                name: "IsRead",
+                table: "ChatMessages");
         }
     }
 }

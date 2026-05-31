@@ -33,7 +33,7 @@ namespace Hive.Api.Controllers
             var token = GenerateJwtToken(user);
 
             // ИСПРАВЛЕНО: Передаем 8 аргументов в UserDto
-            return Ok(new AuthResponse(token, new UserDto(user.Id, user.Username, user.Email, "None", 0, user.AvatarUrl)));
+            return Ok(new AuthResponse(token, new UserDto(user.Id, user.Username, user.Email, "None", user.AvatarUrl)));
         }
 
         [HttpPost("register")]

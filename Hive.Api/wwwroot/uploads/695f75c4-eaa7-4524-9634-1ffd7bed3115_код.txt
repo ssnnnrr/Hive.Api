@@ -1,0 +1,525 @@
+import 'package:coffee_tap/models/category_model.dart';
+import 'package:coffee_tap/models/menu_item_model.dart';
+import 'package:coffee_tap/screens/item_details_screen.dart';
+import 'package:coffee_tap/services/cart_service.dart';
+import 'package:coffee_tap/services/menu_service.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+
+class MenuScreen extends StatefulWidget {
+  const MenuScreen({super.key});
+
+  @override
+  State<MenuScreen> createState() => _MenuScreenState();
+}
+
+class _MenuScreenState extends State<MenuScreen> with WidgetsBindingObserver {
+  final MenuService _menuService = MenuService();
+  late Future<List<dynamic>> _dataFuture;
+
+  List<MenuItem> _allItems = [];
+  List<MenuItem> _filteredItems = [];
+  int? _selectedCategoryId;
+  String _sortBy = 'id';
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _dataFuture = _loadData();
+    _searchController.addListener(_filterItems);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _searchController.removeListener(_filterItems);
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshData();
+    }
+  }
+
+  Future<void> _refreshData() async {
+    setState(() {
+      _dataFuture = _loadData();
+    });
+  }
+
+  Future<List<dynamic>> _loadData() async {
+    final data = await Future.wait([
+      _menuService.getMenuItems(),
+      _menuService.getCategories(),
+    ]);
+    if (mounted) {
+      setState(() {
+        _allItems = data[0] as List<MenuItem>;
+        _filterItems();
+      });
+    }
+    return data;
+  }
+
+  void _filterItems() {
+    List<MenuItem> items = List.from(_allItems);
+    final query = _searchController.text.toLowerCase();
+    if (_selectedCategoryId != null) {
+      items = items
+          .where((item) => item.categoryId == _selectedCategoryId)
+          .toList();
+    }
+    if (query.isNotEmpty) {
+      items = items
+          .where((item) => item.name.toLowerCase().contains(query))
+          .toList();
+    }
+    if (_sortBy == 'price_asc') {
+      items.sort((a, b) => a.price.compareTo(b.price));
+    } else if (_sortBy == 'price_desc') {
+      items.sort((a, b) => b.price.compareTo(a.price));
+    } else if (_sortBy == 'name') {
+      items.sort((a, b) => a.name.compareTo(b.name));
+    }
+    if (mounted) {
+      setState(() {
+        _filteredItems = items;
+      });
+    }
+  }
+
+  void _showSortOptions() {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.sort_by_alpha),
+              title: const Text('По названию'),
+              onTap: () {
+                setState(() => _sortBy = 'name');
+                _filterItems();
+                Navigator.of(context).pop();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.arrow_upward),
+              title: const Text('Сначала дешевле'),
+              onTap: () {
+                setState(() => _sortBy = 'price_asc');
+                _filterItems();
+                Navigator.of(context).pop();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.arrow_downward),
+              title: const Text('Сначала дороже'),
+              onTap: () {
+                setState(() => _sortBy = 'price_desc');
+                _filterItems();
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Меню'),
+        automaticallyImplyLeading: false,
+        actions: [
+          Consumer<CartService>(
+            builder: (context, cart, child) => Badge(
+              label: Text(cart.itemCount.toString()),
+              isLabelVisible: cart.itemCount > 0,
+              backgroundColor: Theme.of(context).primaryColor,
+              child: IconButton(
+                icon: const Icon(Icons.shopping_cart_outlined, size: 30),
+                onPressed: () => Navigator.pushNamed(context, '/cart'),
+                // --- ИЗМЕНЕНИЕ: Убираем фон ---
+                style: IconButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: FutureBuilder<List<dynamic>>(
+        future: _dataFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting &&
+              _allItems.isEmpty) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(
+              child: Text('Ошибка загрузки меню: ${snapshot.error}'),
+            );
+          }
+          if (!snapshot.hasData || (snapshot.data![0] as List).isEmpty) {
+            return const Center(child: Text('Меню пока пустое'));
+          }
+
+          final categories = snapshot.data![1] as List<Category>;
+
+          return Column(
+            children: [
+              _buildSearchAndFilter(),
+              _buildCategoryList(categories),
+              Expanded(
+                child: RefreshIndicator(
+                  onRefresh: _refreshData,
+                  child: _filteredItems.isEmpty
+                      ? const Center(child: Text('Ничего не найдено'))
+                      : GridView.builder(
+                          padding: const EdgeInsets.all(16.0),
+                          gridDelegate:
+                              const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 2,
+                                crossAxisSpacing: 16.0,
+                                mainAxisSpacing: 16.0,
+                                childAspectRatio: 0.6,
+                              ),
+                          itemCount: _filteredItems.length,
+                          itemBuilder: (context, index) {
+                            return _buildMenuItemCard(_filteredItems[index]);
+                          },
+                        ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSearchAndFilter() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Найти напиток или...',
+                prefixIcon: const Icon(
+                  Icons.search,
+                  color: Color.fromARGB(255, 136, 136, 136),
+                ),
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(30),
+                  borderSide: BorderSide.none,
+                ),
+                filled: true,
+                fillColor: Colors.grey[200],
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            onPressed: _showSortOptions,
+            icon: const Icon(
+              Icons.sort,
+              size: 30,
+              color: Color.fromARGB(255, 0, 0, 0),
+            ),
+            tooltip: 'Сортировка',
+            style: IconButton.styleFrom(backgroundColor: Colors.transparent),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCategoryList(List<Category> categories) {
+    return Container(
+      height: 60.0,
+      padding: const EdgeInsets.symmetric(vertical: 10.0),
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 16.0),
+        scrollDirection: Axis.horizontal,
+        itemCount: categories.length + 1,
+        itemBuilder: (context, index) {
+          if (index == 0) {
+            final isSelected = _selectedCategoryId == null;
+            return Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: ChoiceChip(
+                label: const Text('Все'),
+                selected: isSelected,
+                onSelected: (selected) {
+                  setState(() => _selectedCategoryId = null);
+                  _filterItems();
+                },
+              ),
+            );
+          }
+          final category = categories[index - 1];
+          final isSelected = _selectedCategoryId == category.id;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: ChoiceChip(
+              label: Text(category.name),
+              selected: isSelected,
+              onSelected: (selected) {
+                setState(() => _selectedCategoryId = category.id);
+                _filterItems();
+              },
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildMenuItemCard(MenuItem item) {
+    String priceString;
+    if (item.variants.isEmpty) {
+      priceString = '... ₽';
+    } else if (item.variants.length == 1) {
+      priceString = '${item.price.toStringAsFixed(0)} ₽';
+    } else {
+      item.variants.sort((a, b) => a.price.compareTo(b.price));
+      priceString = 'от ${item.variants.first.price.toStringAsFixed(0)} ₽';
+    }
+
+    final bool hasImage =
+        item.imageUrl.isNotEmpty && Uri.tryParse(item.imageUrl)!.isAbsolute;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15.0)),
+      elevation: 4,
+      child: InkWell(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => ItemDetailsScreen(item: item),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(
+              child: Hero(
+                tag: 'menu_item_${item.id}',
+                child: hasImage
+                    ? CachedNetworkImage(
+                        imageUrl: item.imageUrl,
+                        fit: BoxFit.cover,
+                        placeholder: (context, url) => const Center(
+                          child: CircularProgressIndicator(strokeWidth: 2.0),
+                        ),
+                        errorWidget: (context, url, error) => const Icon(
+                          Icons.no_photography_outlined,
+                          size: 40,
+                          color: Colors.grey,
+                        ),
+                      )
+                    : Container(
+                        color: Colors.grey[200],
+                        child: const Icon(
+                          Icons.no_photography_outlined,
+                          size: 40,
+                          color: Colors.grey,
+                        ),
+                      ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(12.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    item.name,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        priceString,
+                        style: TextStyle(
+                          color: Theme.of(context).primaryColor,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 18,
+                        ),
+                      ),
+                      IconButton.filled(
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => ItemDetailsScreen(item: item),
+                          ),
+                        ),
+                        icon: const Icon(Icons.add),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}// lib/screens/main_screen.dart
+
+import 'package:coffee_tap/main.dart';
+import 'package:coffee_tap/screens/admin/admin_panel_screen.dart';
+import 'package:coffee_tap/screens/home_screen.dart';
+import 'package:coffee_tap/screens/menu_screen.dart';
+import 'package:coffee_tap/screens/profile_screen.dart';
+import 'package:coffee_tap/screens/promotions_screen.dart';
+import 'package:flutter/material.dart';
+
+class MainScreen extends StatefulWidget {
+  const MainScreen({super.key});
+
+  @override
+  State<MainScreen> createState() => _MainScreenState();
+}
+
+class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
+  TabController? _tabController;
+  String? _userRole;
+  final GlobalKey<ProfileScreenState> _profileScreenKey = GlobalKey<ProfileScreenState>();
+  
+  @override
+  void initState() {
+    super.initState();
+    _fetchUserRole();
+  }
+
+  @override
+  void dispose() {
+    _tabController?.removeListener(_handleTabSelection);
+    _tabController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchUserRole() async {
+    try {
+      final userId = supabase.auth.currentUser!.id;
+      final response = await supabase.from('profiles').select('role').eq('id', userId).single();
+      if (mounted) {
+        setState(() {
+          _userRole = response['role'];
+          _setupTabController();
+        });
+      }
+    } catch(e) {
+      debugPrint("### Ошибка загрузки роли: $e");
+      if(mounted) {
+        setState(() {
+          _userRole = 'Клиент';
+          _setupTabController();
+        });
+      }
+    }
+  }
+
+  void _setupTabController() {
+    final bool isStaff = _userRole == 'Администратор' || _userRole == 'Сотрудник кассы';
+    final tabLength = isStaff ? 2 : 4;
+    
+    if (_tabController != null && _tabController!.length != tabLength) {
+      _tabController!.dispose();
+      _tabController = null;
+    }
+    
+    _tabController ??= TabController(length: tabLength, vsync: this);
+    _tabController!.addListener(_handleTabSelection);
+  }
+
+  void _handleTabSelection() {
+    if (_tabController!.indexIsChanging) return;
+    final bool isStaff = _userRole == 'Администратор' || _userRole == 'Сотрудник кассы';
+    final int profileIndex = isStaff ? 1 : 3;
+    if (_tabController!.index == profileIndex) {
+      _profileScreenKey.currentState?.loadData();
+    }
+    setState(() {});
+  }
+
+  void _onItemTapped(int index) {
+    _tabController?.animateTo(index);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_userRole == null || _tabController == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    
+    final bool isStaff = _userRole == 'Администратор' || _userRole == 'Сотрудник кассы';
+    
+    final List<Widget> clientScreens = [
+      HomeScreen(
+        onNavigateToMenu: () => _onItemTapped(1),
+        onNavigateToProfile: () => _onItemTapped(3),
+      ),
+      const MenuScreen(),
+      const PromotionsScreen(),
+      ProfileScreen(key: _profileScreenKey),
+    ];
+    final List<BottomNavigationBarItem> clientTabs = const [
+      BottomNavigationBarItem(icon: Icon(Icons.home_outlined), activeIcon: Icon(Icons.home), label: 'Главная'),
+      BottomNavigationBarItem(icon: Icon(Icons.coffee_outlined), activeIcon: Icon(Icons.coffee), label: 'Меню'),
+      BottomNavigationBarItem(icon: Icon(Icons.local_offer_outlined), activeIcon: Icon(Icons.local_offer), label: 'Акции'),
+      BottomNavigationBarItem(icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Профиль'),
+    ];
+    
+    // --- ВОТ ПРАВИЛЬНАЯ НАСТРОЙКА ДЛЯ ПЕРСОНАЛА ---
+    final List<Widget> staffScreens = [
+      const AdminPanelScreen(), // Первая вкладка - Панель управления
+      ProfileScreen(key: _profileScreenKey), // Вторая вкладка - Профиль
+    ];
+    final List<BottomNavigationBarItem> staffTabs = const [
+      BottomNavigationBarItem(icon: Icon(Icons.dashboard_customize_outlined), activeIcon: Icon(Icons.dashboard_customize), label: 'Панель'),
+      BottomNavigationBarItem(icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Профиль'),
+    ];
+
+    final screens = isStaff ? staffScreens : clientScreens;
+    final tabs = isStaff ? staffTabs : clientTabs;
+
+    return Scaffold(
+      body: TabBarView(
+        controller: _tabController,
+        physics: const NeverScrollableScrollPhysics(),
+        children: screens,
+      ),
+      bottomNavigationBar: BottomNavigationBar(
+        items: tabs,
+        currentIndex: _tabController!.index,
+        onTap: _onItemTapped,
+      ),
+    );
+  }
+}

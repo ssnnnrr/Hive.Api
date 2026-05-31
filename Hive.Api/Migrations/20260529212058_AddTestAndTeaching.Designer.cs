@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Hive.Api.Migrations
 {
     [DbContext(typeof(HiveDbContext))]
-    [Migration("20260527223254_UpdateChatAndRoadmapForSkills")]
-    partial class UpdateChatAndRoadmapForSkills
+    [Migration("20260529212058_AddTestAndTeaching")]
+    partial class AddTestAndTeaching
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -465,8 +465,14 @@ namespace Hive.Api.Migrations
                     b.Property<string>("InstructionUrl")
                         .HasColumnType("text");
 
+                    b.Property<bool>("IsRequired")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IsTest")
                         .HasColumnType("boolean");
+
+                    b.Property<int>("MaxAttempts")
+                        .HasColumnType("integer");
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
@@ -482,6 +488,9 @@ namespace Hive.Api.Migrations
 
                     b.Property<double?>("TestScore")
                         .HasColumnType("double precision");
+
+                    b.Property<int>("UsedAttempts")
+                        .HasColumnType("integer");
 
                     b.HasKey("Id");
 
@@ -520,7 +529,7 @@ namespace Hive.Api.Migrations
 
                     b.HasIndex("UserId");
 
-                    b.ToTable("RoadmapStepComment");
+                    b.ToTable("StepComments");
                 });
 
             modelBuilder.Entity("Hive.Api.Entities.Skill", b =>

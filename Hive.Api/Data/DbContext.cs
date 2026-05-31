@@ -41,7 +41,13 @@ namespace Hive.Api.Data
 
             modelBuilder.Entity<Review>()
                 .HasOne(r => r.Reviewed).WithMany(u => u.ReviewsReceived).HasForeignKey(r => r.ReviewedId).OnDelete(DeleteBehavior.Restrict);
-
+            modelBuilder.Entity<Material>(entity =>
+            {
+                entity.HasOne(m => m.Task)
+                      .WithMany()
+                      .HasForeignKey(m => m.TaskId)
+                      .OnDelete(DeleteBehavior.SetNull);
+            });
             modelBuilder.Entity<Friendship>()
                 .HasOne(f => f.UserOne).WithMany().HasForeignKey(f => f.UserOneId).OnDelete(DeleteBehavior.Restrict);
             modelBuilder.Entity<Friendship>()

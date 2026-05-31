@@ -7,7 +7,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Hive.Api.Migrations
 {
     /// <inheritdoc />
-    public partial class InitialCleanPlan : Migration
+    public partial class AddTestAndTeaching : Migration
     {
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -263,6 +263,7 @@ namespace Hive.Api.Migrations
                     Content = table.Column<string>(type: "text", nullable: false),
                     Type = table.Column<int>(type: "integer", nullable: false),
                     GoalId = table.Column<long>(type: "bigint", nullable: false),
+                    TaskId = table.Column<long>(type: "bigint", nullable: true),
                     CreatorId = table.Column<long>(type: "bigint", nullable: false),
                     CreatedAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false)
                 },
@@ -273,6 +274,12 @@ namespace Hive.Api.Migrations
                         name: "FK_Materials_Goals_GoalId",
                         column: x => x.GoalId,
                         principalTable: "Goals",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_Materials_Users_CreatorId",
+                        column: x => x.CreatorId,
+                        principalTable: "Users",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
                 });
@@ -320,7 +327,9 @@ namespace Hive.Api.Migrations
                     GroupId = table.Column<long>(type: "bigint", nullable: false),
                     SenderId = table.Column<long>(type: "bigint", nullable: false),
                     Content = table.Column<string>(type: "text", nullable: false),
-                    SentAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false)
+                    SentAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false),
+                    IsPinned = table.Column<bool>(type: "boolean", nullable: false),
+                    IsDeleted = table.Column<bool>(type: "boolean", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -349,6 +358,9 @@ namespace Hive.Api.Migrations
                     Description = table.Column<string>(type: "text", nullable: true),
                     EventDate = table.Column<DateTime>(type: "timestamp without time zone", nullable: false),
                     IsCompleted = table.Column<bool>(type: "boolean", nullable: false),
+                    LinkUrl = table.Column<string>(type: "text", nullable: true),
+                    Location = table.Column<string>(type: "text", nullable: true),
+                    ImageUrl = table.Column<string>(type: "text", nullable: true),
                     CreatorId = table.Column<long>(type: "bigint", nullable: false),
                     GroupId = table.Column<long>(type: "bigint", nullable: true)
                 },
@@ -404,9 +416,16 @@ namespace Hive.Api.Migrations
                     DueDate = table.Column<DateTime>(type: "timestamp without time zone", nullable: false),
                     CreatedAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false),
                     Status = table.Column<int>(type: "integer", nullable: false),
+                    MaxAttempts = table.Column<int>(type: "integer", nullable: false),
+                    UsedAttempts = table.Column<int>(type: "integer", nullable: false),
+                    TestScore = table.Column<double>(type: "double precision", nullable: true),
                     ArtifactUrl = table.Column<string>(type: "text", nullable: true),
                     TeacherComment = table.Column<string>(type: "text", nullable: true),
-                    InstructionUrl = table.Column<string>(type: "text", nullable: true)
+                    StudentComment = table.Column<string>(type: "text", nullable: true),
+                    InstructionUrl = table.Column<string>(type: "text", nullable: true),
+                    IsTest = table.Column<bool>(type: "boolean", nullable: false),
+                    TestData = table.Column<string>(type: "text", nullable: true),
+                    IsRequired = table.Column<bool>(type: "boolean", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -427,11 +446,17 @@ namespace Hive.Api.Migrations
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     TaskId = table.Column<long>(type: "bigint", nullable: false),
                     UserId = table.Column<long>(type: "bigint", nullable: false),
-                    CompletedAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false)
+                    CompletedAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false),
+                    TaskCompletionId = table.Column<long>(type: "bigint", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_TaskCompletions", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_TaskCompletions_TaskCompletions_TaskCompletionId",
+                        column: x => x.TaskCompletionId,
+                        principalTable: "TaskCompletions",
+                        principalColumn: "Id");
                     table.ForeignKey(
                         name: "FK_TaskCompletions_Tasks_TaskId",
                         column: x => x.TaskId,
@@ -440,6 +465,69 @@ namespace Hive.Api.Migrations
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_TaskCompletions_Users_UserId",
+                        column: x => x.UserId,
+                        principalTable: "Users",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "StepComments",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
+                    RoadmapStepId = table.Column<long>(type: "bigint", nullable: false),
+                    UserId = table.Column<long>(type: "bigint", nullable: false),
+                    Text = table.Column<string>(type: "text", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false),
+                    UpdatedAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_StepComments", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_StepComments_RoadmapSteps_RoadmapStepId",
+                        column: x => x.RoadmapStepId,
+                        principalTable: "RoadmapSteps",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_StepComments_Users_UserId",
+                        column: x => x.UserId,
+                        principalTable: "Users",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "TaskComments",
+                columns: table => new
+                {
+                    Id = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
+                    TaskId = table.Column<long>(type: "bigint", nullable: false),
+                    UserId = table.Column<long>(type: "bigint", nullable: false),
+                    Text = table.Column<string>(type: "text", nullable: false),
+                    CreatedAt = table.Column<DateTime>(type: "timestamp without time zone", nullable: false),
+                    TaskCompletionId = table.Column<long>(type: "bigint", nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_TaskComments", x => x.Id);
+                    table.ForeignKey(
+                        name: "FK_TaskComments_TaskCompletions_TaskCompletionId",
+                        column: x => x.TaskCompletionId,
+                        principalTable: "TaskCompletions",
+                        principalColumn: "Id");
+                    table.ForeignKey(
+                        name: "FK_TaskComments_Tasks_TaskId",
+                        column: x => x.TaskId,
+                        principalTable: "Tasks",
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey(
+                        name: "FK_TaskComments_Users_UserId",
                         column: x => x.UserId,
                         principalTable: "Users",
                         principalColumn: "Id",
@@ -507,6 +595,11 @@ namespace Hive.Api.Migrations
                 column: "OwnerId");
 
             migrationBuilder.CreateIndex(
+                name: "IX_Materials_CreatorId",
+                table: "Materials",
+                column: "CreatorId");
+
+            migrationBuilder.CreateIndex(
                 name: "IX_Materials_GoalId",
                 table: "Materials",
                 column: "GoalId");
@@ -530,6 +623,36 @@ namespace Hive.Api.Migrations
                 name: "IX_RoadmapSteps_GroupId",
                 table: "RoadmapSteps",
                 column: "GroupId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_StepComments_RoadmapStepId",
+                table: "StepComments",
+                column: "RoadmapStepId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_StepComments_UserId",
+                table: "StepComments",
+                column: "UserId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_TaskComments_TaskCompletionId",
+                table: "TaskComments",
+                column: "TaskCompletionId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_TaskComments_TaskId",
+                table: "TaskComments",
+                column: "TaskId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_TaskComments_UserId",
+                table: "TaskComments",
+                column: "UserId");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_TaskCompletions_TaskCompletionId",
+                table: "TaskCompletions",
+                column: "TaskCompletionId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_TaskCompletions_TaskId_UserId",
@@ -589,22 +712,28 @@ namespace Hive.Api.Migrations
                 name: "Reviews");
 
             migrationBuilder.DropTable(
+                name: "StepComments");
+
+            migrationBuilder.DropTable(
+                name: "TaskComments");
+
+            migrationBuilder.DropTable(
+                name: "UserSkills");
+
+            migrationBuilder.DropTable(
                 name: "RoadmapSteps");
 
             migrationBuilder.DropTable(
                 name: "TaskCompletions");
 
             migrationBuilder.DropTable(
-                name: "UserSkills");
+                name: "Skills");
 
             migrationBuilder.DropTable(
                 name: "Groups");
 
             migrationBuilder.DropTable(
                 name: "Tasks");
-
-            migrationBuilder.DropTable(
-                name: "Skills");
 
             migrationBuilder.DropTable(
                 name: "Goals");

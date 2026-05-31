@@ -110,15 +110,19 @@ namespace Hive.Api.Entities
         public MaterialType Type { get; set; }
         public long GoalId { get; set; }
         public long? TaskId { get; set; }
-
-        public long CreatorId { get; set; } // ID автора
+        public long CreatorId { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-        // ОБЯЗАТЕЛЬНО ДОЛЖНО БЫТЬ ЭТО ПОЛЕ ДЛЯ СВЯЗИ:
+        // Навигационные свойства
         [ForeignKey("CreatorId")]
         public virtual User? Creator { get; set; }
 
+        [ForeignKey("GoalId")]
         public virtual Goal? Goal { get; set; }
+
+        // *** ДОБАВЬТЕ ЭТО СВОЙСТВО ***
+        [ForeignKey("TaskId")]
+        public virtual HiveTask? Task { get; set; }
     }
 
     public class GoalCollaboration
@@ -141,8 +145,14 @@ namespace Hive.Api.Entities
         public long OwnerId { get; set; }
         [ForeignKey("OwnerId")] public virtual User? Owner { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
         public virtual ICollection<GroupMember> Members { get; set; } = new List<GroupMember>();
+
+        // ВЕРНУЛИ ИМЯ ОБРАТНО, чтобы GroupsController не выдавал ошибку
         public virtual ICollection<ChatMessage> ChatMessages { get; set; } = new List<ChatMessage>();
+
+        // Это оставляем, оно нужно для удаления заданий
+        public virtual ICollection<RoadmapStep> RoadmapSteps { get; set; } = new List<RoadmapStep>();
     }
 
     public class GroupMember
@@ -256,6 +266,7 @@ namespace Hive.Api.Entities
 
         // Поле для логического удаления или системных уведомлений (опционально)
         public bool IsDeleted { get; set; } = false;
+        public bool IsRead { get; set; } = false;
     }
 
     public class Review

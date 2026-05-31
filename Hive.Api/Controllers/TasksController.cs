@@ -41,14 +41,14 @@ namespace Hive.Api.Controllers
                 t.ArtifactUrl,
                 t.StudentComment,
                 t.TeacherComment,
-                // Собираем Username и AvatarUrl
                 t.Completions.Select(tc => new UserMinimalDto(
                     tc.User?.Username ?? "Аноним",
                     tc.User?.AvatarUrl
                 )).ToList(),
                 t.Comments.Select(c => new TaskCommentDto(
                     c.Id, c.UserId, c.User?.Username ?? "Аноним", c.User?.AvatarUrl, c.Text, c.CreatedAt
-                )).ToList()
+                )).ToList(),
+                t.Goal?.IsSolo ?? true
             )).ToList();
 
             return Ok(res);
@@ -59,7 +59,6 @@ namespace Hive.Api.Controllers
         {
             var userId = CurrentUserId;
 
-            // Ищем все цели, где пользователь - владелец или подтвержденный партнер
             var goalIds = await _context.GoalCollaborations
                 .Where(c => c.UserId == userId && (c.IsConfirmed || _context.Goals.Any(g => g.Id == c.GoalId && g.UserId == userId)))
                 .Select(c => c.GoalId)
@@ -86,7 +85,8 @@ namespace Hive.Api.Controllers
                 t.StudentComment,
                 t.TeacherComment,
                 t.Completions.Select(tc => new UserMinimalDto(tc.User?.Username ?? "Аноним", tc.User?.AvatarUrl)).ToList(),
-                t.Comments.Select(c => new TaskCommentDto(c.Id, c.UserId, c.User?.Username ?? "Аноним", c.User?.AvatarUrl, c.Text, c.CreatedAt)).ToList()
+                t.Comments.Select(c => new TaskCommentDto(c.Id, c.UserId, c.User?.Username ?? "Аноним", c.User?.AvatarUrl, c.Text, c.CreatedAt)).ToList(),
+                t.Goal?.IsSolo ?? true
             )).ToList();
 
             return Ok(res);
@@ -95,13 +95,11 @@ namespace Hive.Api.Controllers
         [HttpPatch("{id}/reschedule")]
         public async Task<IActionResult> RescheduleTask(long id, [FromBody] RescheduleRequest req)
         {
-            // Логируем для отладки в консоль Visual Studio
             Console.WriteLine($"[BACKEND]: Rescheduling task {id} to {req.NewDate}");
 
             var task = await _context.Tasks.FindAsync(id);
             if (task == null) return NotFound();
 
-            // PostgreSQL требует UTC. Принудительно задаем Kind, если он не пришел.
             task.DueDate = DateTime.SpecifyKind(req.NewDate, DateTimeKind.Utc);
 
             _context.Tasks.Update(task);
@@ -109,8 +107,6 @@ namespace Hive.Api.Controllers
 
             return Ok();
         }
-
-
 
         [HttpPatch("{id}/status")]
         public async Task<IActionResult> UpdateStatus(long id, [FromBody] UpdateStatusRequest req)
@@ -150,18 +146,8 @@ namespace Hive.Api.Controllers
 
             await _context.SaveChangesAsync();
 
-            // Пересчет прогресса цели для текущего пользователя
-            if (task.Goal != null)
-            {
-                var total = await _context.Tasks.CountAsync(t => t.GoalId == task.GoalId);
-                var done = await _context.TaskCompletions
-                    .CountAsync(tc => tc.UserId == CurrentUserId &&
-                                     _context.Tasks.Any(t => t.Id == tc.TaskId && t.GoalId == task.GoalId));
-
-                task.Goal.Progress = total > 0 ? (double)done / total * 100 : 0;
-                await _context.SaveChangesAsync();
-                Console.WriteLine($"[BACKEND LOG]: New Goal {task.GoalId} Progress: {task.Goal.Progress}%");
-            }
+            // *** ВЫЗЫВАЕМ ОБНОВЛЕНИЕ ПРОГРЕССА ЦЕЛИ ***
+            await UpdateGoalProgress(task.GoalId);
 
             return Ok();
         }
@@ -178,16 +164,35 @@ namespace Hive.Api.Controllers
             };
             _context.Tasks.Add(task);
             await _context.SaveChangesAsync();
+
+            // Обновляем прогресс цели после добавления новой задачи
+            await UpdateGoalProgress(req.GoalId);
+
             return Ok();
         }
 
         [HttpDelete("{id}")]
         public async Task<IActionResult> Delete(long id)
         {
-            var task = await _context.Tasks.FindAsync(id);
+            var task = await _context.Tasks
+                .Include(t => t.Completions)
+                .Include(t => t.Comments)
+                .FirstOrDefaultAsync(t => t.Id == id);
+
             if (task == null || task.CreatorId != CurrentUserId) return Forbid();
+
+            var goalId = task.GoalId;
+
+            // Удаляем связанные completions и comments
+            _context.TaskCompletions.RemoveRange(task.Completions);
+            _context.TaskComments.RemoveRange(task.Comments);
             _context.Tasks.Remove(task);
+
             await _context.SaveChangesAsync();
+
+            // Обновляем прогресс цели после удаления задачи
+            await UpdateGoalProgress(goalId);
+
             return Ok();
         }
 
@@ -219,6 +224,66 @@ namespace Hive.Api.Controllers
             t.Title = req.Title;
             await _context.SaveChangesAsync();
             return Ok();
+        }
+
+        // *** НОВЫЙ МЕТОД ДЛЯ ОБНОВЛЕНИЯ ПРОГРЕССА ЦЕЛИ ***
+        private async Task UpdateGoalProgress(long goalId)
+        {
+            var goal = await _context.Goals
+                .Include(g => g.Tasks)
+                    .ThenInclude(t => t.Completions)
+                .Include(g => g.Collaborations)
+                .FirstOrDefaultAsync(g => g.Id == goalId);
+
+            if (goal == null) return;
+
+            if (!goal.Tasks.Any())
+            {
+                goal.Progress = 0;
+                await _context.SaveChangesAsync();
+                return;
+            }
+
+            // Считаем прогресс создателя цели
+            var creatorTasksDone = goal.Tasks.Count(t =>
+                t.Completions.Any(tc => tc.UserId == goal.UserId));
+
+            double creatorProgress = (double)creatorTasksDone / goal.Tasks.Count * 100;
+
+            // Если цель соло - прогресс создателя и есть общий прогресс
+            if (goal.IsSolo)
+            {
+                goal.Progress = creatorProgress;
+            }
+            else
+            {
+                // Для групповых целей считаем средний прогресс всех подтвержденных участников
+                var confirmedMemberIds = goal.Collaborations
+                    .Where(c => c.IsConfirmed)
+                    .Select(c => c.UserId)
+                    .ToList();
+
+                // Добавляем создателя, если его еще нет в списке
+                if (!confirmedMemberIds.Contains(goal.UserId))
+                {
+                    confirmedMemberIds.Add(goal.UserId);
+                }
+
+                double totalProgress = 0;
+                foreach (var memberId in confirmedMemberIds)
+                {
+                    var memberTasksDone = goal.Tasks.Count(t =>
+                        t.Completions.Any(tc => tc.UserId == memberId));
+                    totalProgress += (double)memberTasksDone / goal.Tasks.Count * 100;
+                }
+
+                goal.Progress = confirmedMemberIds.Count > 0
+                    ? totalProgress / confirmedMemberIds.Count
+                    : 0;
+            }
+
+            await _context.SaveChangesAsync();
+            Console.WriteLine($"[BACKEND LOG]: Updated Goal {goalId} Progress to {goal.Progress}%");
         }
     }
 }

@@ -18,42 +18,43 @@ namespace Hive.Api.Controllers
 
         private long CurrentUserId => long.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
-        // GET: api/groups - получить все группы текущего пользователя
         [HttpGet]
         public async Task<IActionResult> GetMyGroups()
         {
             var groups = await _context.Groups
-                .Include(g => g.Members)
-                .ThenInclude(m => m.User)
-                .Include(g => g.Owner)
+                .Include(g => g.Members).ThenInclude(m => m.User)
                 .Include(g => g.ChatMessages)
+                .Include(g => g.RoadmapSteps) // Подгружаем шаги для счета
                 .Where(g => g.Members.Any(m => m.UserId == CurrentUserId))
-                .OrderByDescending(g => g.ChatMessages
-                    .OrderByDescending(m => m.SentAt)
-                    .Select(m => m.SentAt)
-                    .FirstOrDefault())
                 .Select(g => new GroupResponse
                 {
                     Id = g.Id,
                     Name = g.IsSolo
                         ? g.Members.Where(m => m.UserId != CurrentUserId)
-                            .Select(m => m.User.Username)
-                            .FirstOrDefault() ?? "Чат"
+                            .Select(m => m.User.Username).FirstOrDefault() ?? "Чат"
                         : g.Name,
-                    Description = g.Description,
-                    OwnerName = g.Owner.Username,
-                    MembersCount = g.Members.Count,
                     IsSolo = g.IsSolo,
+                    MembersCount = g.Members.Count,
                     OtherUserId = g.IsSolo
-                        ? g.Members.Where(m => m.UserId != CurrentUserId)
-                            .Select(m => m.UserId)
-                            .FirstOrDefault()
+                        ? g.Members.Where(m => m.UserId != CurrentUserId).Select(m => m.UserId).FirstOrDefault()
                         : null,
-                    LastMessage = g.ChatMessages
-                        .OrderByDescending(m => m.SentAt)
-                        .Select(m => m.Content)
-                        .FirstOrDefault()
+                    // ПОСЛЕДНЕЕ СООБЩЕНИЕ
+                    LastMessage = g.ChatMessages.OrderByDescending(m => m.SentAt).Select(m => m.Content).FirstOrDefault(),
+                    // ВРЕМЯ ПОСЛЕДНЕГО СООБЩЕНИЯ
+                    LastMessageAt = g.ChatMessages.OrderByDescending(m => m.SentAt).Select(m => m.SentAt).FirstOrDefault(),
+
+                    // ЖИВАЯ ЛОГИКА УВЕДОМЛЕНИЙ:
+                    // 1. Считаем шаги плана, которые просрочены или требуют внимания
+                    UnreadCount = g.RoadmapSteps.Count(s =>
+    s.Status != Entities.TaskStatus.Done &&
+    s.DueDate < DateTime.UtcNow &&
+    s.CreatorId != CurrentUserId)
+    // ТЕПЕРЬ ЭТО БУДЕТ РАБОТАТЬ:
+    + g.ChatMessages.Count(m => m.SenderId != CurrentUserId && !m.IsRead)
+                    // 2. Можно добавить сюда счетчик непрочитанных сообщений, если в БД есть флаг IsRead
+                    + g.ChatMessages.Count(m => m.SenderId != CurrentUserId && !m.IsRead)
                 })
+                .OrderByDescending(g => g.LastMessageAt) // Самые свежие сверху
                 .ToListAsync();
 
             return Ok(groups);

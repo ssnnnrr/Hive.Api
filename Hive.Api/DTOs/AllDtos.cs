@@ -10,7 +10,15 @@ namespace Hive.Api.DTOs
     public record LoginRequest(string Email, string Password);
     public record RegisterRequest(string Username, string Email, string Password);
     public record AuthResponse(string Token, UserDto User);
-    public record UserDto(long Id, string Username, string Email, string SynergyLevel, double Rating, string? AvatarUrl);
+    public record UserDto(
+        long Id,
+        string Username,
+        string Email,
+        string SynergyLevel,
+        string? AvatarUrl,
+        List<string>? MatchTeaching = null,
+        List<string>? MatchLearning = null
+    );
     public record UserProfileDto(long Id, string Username, string Email, List<UserSkillDto> Skills, List<ReviewDto> Reviews, double Rating, string RelationshipStatus, string? AvatarUrl);
     public record UserSkillDto(long SkillId, string skillName, string Type);
     public record SkillDto(long Id, string Name);
@@ -34,38 +42,81 @@ namespace Hive.Api.DTOs
     );
 
 
+    public class UploadMaterialRequest
+    {
+        public int GoalId { get; set; }
+        public string Title { get; set; }
+        public string? Content { get; set; } // Для ссылок
+        public IFormFile? File { get; set; } // Для файлов
+        public int? TaskId { get; set; }
+    }
+
     public record TaskResponse(
-        [property: JsonPropertyName("id")] long Id,
-        [property: JsonPropertyName("title")] string Title,
-        [property: JsonPropertyName("dueDate")] DateTime DueDate,
-        [property: JsonPropertyName("status")] string Status,
-        [property: JsonPropertyName("goalId")] long GoalId,
-        [property: JsonPropertyName("goalTitle")] string GoalTitle,
-        [property: JsonPropertyName("creatorId")] long CreatorId,
-        [property: JsonPropertyName("assigneeId")] long? AssigneeId,
-        [property: JsonPropertyName("artifactUrl")] string? ArtifactUrl,
-        [property: JsonPropertyName("studentComment")] string? StudentComment,
-        [property: JsonPropertyName("teacherComment")] string? TeacherComment,
-        // Теперь здесь полноценные объекты участников
-        [property: JsonPropertyName("completions")] List<UserMinimalDto> Completions,
-        [property: JsonPropertyName("comments")] List<TaskCommentDto> Comments
-    );
+    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("dueDate")] DateTime DueDate,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("goalId")] long GoalId,
+    [property: JsonPropertyName("goalTitle")] string GoalTitle,
+    [property: JsonPropertyName("creatorId")] long CreatorId,
+    [property: JsonPropertyName("assigneeId")] long? AssigneeId,
+    [property: JsonPropertyName("artifactUrl")] string? ArtifactUrl,
+    [property: JsonPropertyName("studentComment")] string? StudentComment,
+    [property: JsonPropertyName("teacherComment")] string? TeacherComment,
+    // 12-й:
+    [property: JsonPropertyName("completions")] List<UserMinimalDto> Completions,
+    // 13-й:
+    [property: JsonPropertyName("comments")] List<TaskCommentDto> Comments,
+    // 14-й:
+    [property: JsonPropertyName("isSolo")] bool IsSolo
+);
 
     public record RescheduleRequest(
         [property: JsonPropertyName("newDate")] DateTime NewDate
     );
 
     public record TaskCommentDto(long Id, long UserId, string UserName, string? UserAvatar, string Text, DateTime CreatedAt); public record AddCommentRequest(long TaskId, string Text);
-    public record MaterialDto(
-    long Id,
-    string Title,
-    string Content,
-    string Type,
-    long CreatorId,
-    string CreatorName,
-    string? CreatorAvatarUrl, // <-- ДОБАВЛЕНО
-    DateTime CreatedAt
-);
+    public class MaterialDto
+    {
+        public long Id { get; set; }
+        public string Title { get; set; }
+        public string Content { get; set; }
+        public string Type { get; set; }
+        public long CreatorId { get; set; }
+        public string CreatorName { get; set; }
+        public string? CreatorAvatarUrl { get; set; }
+        public DateTime CreatedAt { get; set; }
+        public int? TaskId { get; set; }
+        public string? TaskTitle { get; set; }
+
+        // Пустой конструктор
+        public MaterialDto() { }
+
+        // Конструктор со всеми параметрами
+        public MaterialDto(
+            long id,
+            string title,
+            string content,
+            string type,
+            long creatorId,
+            string creatorName,
+            string? creatorAvatarUrl,
+            DateTime createdAt,
+            int? taskId = null,
+            string? taskTitle = null)
+        {
+            Id = id;
+            Title = title;
+            Content = content;
+            Type = type;
+            CreatorId = creatorId;
+            CreatorName = creatorName;
+            CreatorAvatarUrl = creatorAvatarUrl;
+            CreatedAt = createdAt;
+            TaskId = taskId;
+            TaskTitle = taskTitle;
+        }
+    }
 
     // При приглашении друга
     public record PartnerDto(long Id, string Username, string? AvatarUrl, bool IsConfirmed);
@@ -184,6 +235,8 @@ public class UpdateStatusRequest
         public int MembersCount { get; set; }
         public bool IsSolo { get; set; }
         public long? OtherUserId { get; set; }
+        public DateTime? LastMessageAt { get; set; }
+        public int UnreadCount { get; set; }
         public string? LastMessage { get; set; } // Добавляем поле
     }
 
@@ -218,6 +271,5 @@ public class UpdateStatusRequest
         public string Username { get; set; }
         public string? AvatarUrl { get; set; }
     }
-    public record MessageDto(long Id, string Content, long SenderId, string SenderName, DateTime SentAt);
-    public record SendMessageRequest(long GroupId, string Content);
+    public record MessageDto(long Id, string Content, long SenderId, string SenderName, DateTime SentAt, bool IsRead); public record SendMessageRequest(long GroupId, string Content);
 }

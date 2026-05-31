@@ -33,7 +33,7 @@ namespace Hive.Api.Controllers
             {
                 Title = req.Title,
                 Description = req.Description,
-                EventDate = DateTime.SpecifyKind(req.EventDate, DateTimeKind.Utc),
+                EventDate = DateTime.SpecifyKind(req.EventDate, DateTimeKind.Unspecified),
                 CreatorId = CurrentUserId,
                 GroupId = req.GroupId,
                 LinkUrl = req.LinkUrl,
@@ -65,7 +65,7 @@ namespace Hive.Api.Controllers
 
             ev.Title = req.Title;
             ev.Description = req.Description;
-            ev.EventDate = DateTime.SpecifyKind(req.EventDate, DateTimeKind.Utc);
+            ev.EventDate = req.EventDate;
             ev.LinkUrl = req.LinkUrl;
             ev.Location = req.Location;
             ev.ImageUrl = req.ImageUrl;
