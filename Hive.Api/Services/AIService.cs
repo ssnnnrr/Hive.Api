@@ -2,6 +2,7 @@
 using Newtonsoft.Json;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Hive.Api.Services
@@ -25,6 +26,7 @@ namespace Hive.Api.Services
         {
             var handler = new HttpClientHandler { ServerCertificateCustomValidationCallback = (m, c, ch, e) => true };
             _httpClient = new HttpClient(handler);
+            _httpClient.Timeout = TimeSpan.FromSeconds(100);
             _authKey = config["AI:GigaChatKey"] ?? "";
         }
 
@@ -198,6 +200,146 @@ namespace Hive.Api.Services
                 return aiSummary.Trim();
             }
             catch { return null; }
+        }
+
+
+        private async Task<string?> GetCompletionAsync(string prompt)
+        {
+            var token = await GetTokenAsync();
+            if (string.IsNullOrEmpty(token)) return null;
+
+            try
+            {
+                var requestBody = new { model = "GigaChat", messages = new[] { new { role = "user", content = prompt } } };
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+                var response = await _httpClient.PostAsync("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+                    new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
+
+                var content = await response.Content.ReadAsStringAsync();
+                var result = JsonConvert.DeserializeObject<dynamic>(content);
+                string rawText = result?.choices[0]?.message?.content ?? "";
+
+                // --- УЛУЧШЕННЫЙ ПАРСИНГ ---
+                // Ищем начало [ и конец ] массива, чтобы отсечь лишний текст от ИИ
+                int start = rawText.IndexOf('[');
+                int end = rawText.LastIndexOf(']');
+
+                if (start != -1 && end != -1 && end > start)
+                {
+                    return rawText.Substring(start, (end - start) + 1);
+                }
+
+                return null;
+            }
+            catch { return null; }
+        }
+
+        // Hive.Api/Services/AIService.cs
+
+        public async Task<string?> GenerateComplexVerificationTest(string skillName)
+        {
+            // 1. Улучшенный промпт с жестким контролем языка
+            var prompt = $@"Ты — профессиональный эксперт-аттестатор. 
+Создай уникальный, сложный тест из 10 вопросов по теме: '{skillName}'.
+
+ПРАВИЛА ЯЗЫКА:
+- Если '{skillName}' — это иностранный язык (например, English, German), пиши вопросы и ответы на этом языке.
+- ДЛЯ ВСЕХ ОСТАЛЬНЫХ ТЕМ (программирование, дизайн, маркетинг и т.д.) ПИШИ СТРОГО НА РУССКОМ ЯЗЫКЕ.
+
+ТРЕБОВАНИЯ К ТЕСТУ:
+- Уровень сложности: Senior/Lead/Expert.
+- Темы вопросов должны быть разнообразными и не повторяться.
+-ЗАПРЕТЫ: 
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать комментарии вида // или /* внутри JSON.
+   - ЗАПРЕЩЕНО использовать двойные кавычки внутри текста вопроса. Используй только одинарные (').
+   - ЗАПРЕЩЕНО ставить точку с запятой (;) в конце строк внутри JSON.
+- Формат: СТРОГО JSON массив объектов БЕЗ вводных слов.
+- Структура: [{{""question"":""текст"",""options"":[""A"",""B"",""C"",""D""],""correctAnswer"":""точный текст""}}]
+- В поле correctAnswer НЕ должно быть лишних кавычек или точек.
+- Если внутри текста нужны кавычки, используй одинарные (').";
+
+            try
+            {
+                var token = await GetTokenAsync();
+                if (token == null) return null;
+
+                var requestBody = new
+                {
+                    model = "GigaChat",
+                    messages = new[] { new { role = "user", content = prompt } },
+                    temperature = 0.85, // Оставляем высокой для разнообразия
+                    max_tokens = 3500
+                };
+
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+                var response = await _httpClient.PostAsync("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+                    new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
+
+                if (!response.IsSuccessStatusCode) return null;
+
+                var content = await response.Content.ReadAsStringAsync();
+                var result = JsonConvert.DeserializeObject<dynamic>(content);
+                string rawText = result?.choices[0]?.message?.content ?? "";
+
+                // Логируем для отладки (вы увидите это в Output Visual Studio)
+                Console.WriteLine($"[AI RESPONSE]: {rawText}");
+
+                return RobustJsonRepair(rawText);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AI FATAL]: {ex.Message}");
+                return null;
+            }
+        }
+
+        private string? RobustJsonRepair(string input)
+        {
+            if (string.IsNullOrWhiteSpace(input)) return null;
+            try
+            {
+                // 1. Убираем Markdown
+                string cleaned = Regex.Replace(input, @"```json|```", "").Trim();
+
+                // 2. УДАЛЯЕМ КОММЕНТАРИИ (те самые // которые сломали парсинг)
+                cleaned = Regex.Replace(cleaned, @"//.*$", "", RegexOptions.Multiline);
+                cleaned = Regex.Replace(cleaned, @"/\*.*?\*/", "", RegexOptions.Singleline);
+
+                // 3. Находим границы массива
+                int startIndex = cleaned.IndexOf('[');
+                if (startIndex == -1) return null;
+                cleaned = cleaned.Substring(startIndex);
+
+                // 4. Чиним обрывы
+                if (!cleaned.EndsWith("]"))
+                {
+                    int lastGoodObjectEnd = cleaned.LastIndexOf('}');
+                    if (lastGoodObjectEnd != -1) cleaned = cleaned.Substring(0, lastGoodObjectEnd + 1) + "]";
+                    else return null;
+                }
+
+                // 5. Удаляем мусорные символы, которые ИИ лепит в строки
+                cleaned = cleaned.Replace("\n", " ").Replace("\r", " ");
+
+                // Убираем "; в конце строк (ошибка из лога)
+                cleaned = cleaned.Replace("\";", "\"");
+
+                // Фикс запятых
+                cleaned = Regex.Replace(cleaned, @"}\s*{", "},{");
+                cleaned = Regex.Replace(cleaned, @",\s*]", "]");
+                cleaned = Regex.Replace(cleaned, @",\s*}", "}");
+
+                // Убираем лишние одинарные кавычки в значениях
+                cleaned = Regex.Replace(cleaned, @":\s*""'([^""]+)'""", @":""$1""");
+
+                using (JsonDocument.Parse(cleaned)) return cleaned;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CLEANUP FAILED]: {ex.Message}");
+                return null;
+            }
         }
 
 

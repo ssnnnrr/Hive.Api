@@ -120,22 +120,24 @@ namespace Hive.Api.Controllers
         [HttpPost("roadmap/toggle-complete")]
         public async Task<IActionResult> ToggleComplete([FromBody] JsonElement body)
         {
-            // Извлекаем id из JSON объекта
             if (!body.TryGetProperty("stepId", out var idProp))
                 return BadRequest("Укажите stepId");
 
             long stepId = idProp.GetInt64();
-
             var step = await _context.RoadmapSteps.FindAsync(stepId);
-            if (step == null) return NotFound();
 
-            // Простая логика: если было Done -> ставим ToDo, иначе -> Done
-            if (step.Status == Entities.TaskStatus.Done)
-                step.Status = Entities.TaskStatus.ToDo;
-            else
-                step.Status = Entities.TaskStatus.Done;
+            if (step == null) return NotFound();
+            if (step.IsArchived) return BadRequest("Нельзя менять статус архивной задачи");
+
+            step.Status = step.Status == Entities.TaskStatus.Done
+                          ? Entities.TaskStatus.ToDo
+                          : Entities.TaskStatus.Done;
 
             await _context.SaveChangesAsync();
+
+            // Оповещаем группу, чтобы чекбокс изменился у обоих мгновенно
+            await _hubContext.Clients.Group(step.GroupId.ToString()).SendAsync("RoadmapUpdated");
+
             return Ok(new { step.Id, Status = step.Status.ToString() });
         }
 
@@ -178,6 +180,8 @@ namespace Hive.Api.Controllers
                 s.DueDate,
                 Status = s.Status.ToString(),
                 s.CreatorId,
+                // !!! ВОТ ЭТА СТРОЧКА КРИТИЧНА ДЛЯ АРХИВА !!!
+                IsArchived = s.IsArchived,
                 s.InstructionUrl,
                 s.ArtifactUrl,
                 s.TeacherComment,
@@ -187,8 +191,6 @@ namespace Hive.Api.Controllers
                 s.TestScore,
                 s.IsRequired,
                 s.GroupId,
-
-                // --- ВОТ ЭТИ ДВЕ СТРОЧКИ НУЖНО ДОБАВИТЬ! ---
                 s.MaxAttempts,
                 s.UsedAttempts,
                 // ------------------------------------------
@@ -276,67 +278,104 @@ namespace Hive.Api.Controllers
             };
         }
 
+        // --- МЕТОД 1: Сдача работы учеником ---
         [HttpPost("roadmap/submit")]
-        public async Task<IActionResult> SubmitStep([FromBody] JsonElement req)
+        public async Task<IActionResult> SubmitStep([FromBody] SubmitStepRequestDto req)
         {
-            // 1. Извлекаем данные
-            long stepId = req.GetProperty("stepId").GetInt64();
-            string? studentComment = req.TryGetProperty("studentComment", out var comment) ? comment.GetString() : null;
-            string? fileBase64 = req.TryGetProperty("file", out var fileElem) ? fileElem.GetString() : null;
-            string? fileName = req.TryGetProperty("fileName", out var nameElem) ? nameElem.GetString() : null;
-
-            // Новое: возможность передать просто URL-ссылку напрямую
-            string? directUrl = req.TryGetProperty("artifactUrl", out var urlElem) ? urlElem.GetString() : null;
-
-            var step = await _context.RoadmapSteps.FindAsync(stepId);
+            var step = await _context.RoadmapSteps.FindAsync(req.StepId);
             if (step == null) return NotFound();
 
+            // Запрет сдавать самому себе
             if (step.CreatorId == CurrentUserId)
                 return BadRequest("Вы не можете сдавать задание, которое создали сами");
 
-            // 2. Обработка контента (Файл или Ссылка)
-            if (!string.IsNullOrEmpty(fileBase64))
+            // Если прислали файл (Base64), сохраняем его
+            if (!string.IsNullOrEmpty(req.File))
             {
-                // Если прислали файл
                 var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads");
                 if (!Directory.Exists(uploadsPath)) Directory.CreateDirectory(uploadsPath);
 
-                var uniqueFileName = $"{Guid.NewGuid()}_{fileName ?? "file.dat"}";
+                var uniqueFileName = $"{Guid.NewGuid()}_{req.FileName}";
                 var filePath = Path.Combine(uploadsPath, uniqueFileName);
 
-                var fileBytes = Convert.FromBase64String(fileBase64);
+                var fileBytes = Convert.FromBase64String(req.File);
                 await System.IO.File.WriteAllBytesAsync(filePath, fileBytes);
 
                 step.ArtifactUrl = uniqueFileName;
             }
-            else if (!string.IsNullOrEmpty(directUrl))
+            else if (!string.IsNullOrEmpty(req.StudentComment)) // Если просто текст/ссылка
             {
-                // Если прислали просто ссылку
-                step.ArtifactUrl = directUrl;
+                // Если в комментарии ссылка, можем продублировать её в ArtifactUrl
+                if (req.StudentComment.StartsWith("http")) step.ArtifactUrl = req.StudentComment;
             }
 
-            // 3. СБРОС СОСТОЯНИЯ (Ключевой момент)
-            step.Status = Entities.TaskStatus.UnderReview; // Снова на проверке
-            step.TeacherComment = null;                   // Удаляем старые правки
-            step.StudentComment = studentComment;         // Сохраняем новый комментарий ученика
+            step.StudentComment = req.StudentComment;
+            step.Status = Entities.TaskStatus.UnderReview; // ПЕРЕВОД В СТАТУС "НА ПРОВЕРКЕ"
+            step.TeacherComment = null; // Сбрасываем старые замечания учителя
 
-            // 4. Уведомление учителю
+            // Уведомление учителю
             _context.Notifications.Add(new Notification
             {
                 UserId = step.CreatorId,
-                Title = "Задание обновлено",
-                Message = $"Ученик исправил работу: {step.Content}",
-                Type = "TaskReview",
+                Title = "Задание сдано",
+                Message = $"Ученик прислал работу на проверку: {step.Content}",
+                Type = "TaskSubmission",
                 CreatedAt = DateTime.UtcNow,
                 RoadmapStepId = step.Id
             });
 
             await _context.SaveChangesAsync();
-
-            // Оповещаем группу через SignalR
             await _hubContext.Clients.Group(step.GroupId.ToString()).SendAsync("RoadmapUpdated");
 
-            return Ok(new { step.Id, Status = step.Status.ToString(), step.ArtifactUrl });
+            return Ok(new { step.Id, Status = step.Status.ToString() });
+        }
+
+        // --- МЕТОД 2: Проверка работы учителем (Принять / Вернуть) ---
+        [HttpPost("roadmap/verify")]
+        public async Task<IActionResult> VerifyStep([FromBody] VerifyStepRequest req)
+        {
+            var step = await _context.RoadmapSteps.FindAsync(req.StepId);
+            if (step == null) return NotFound();
+
+            // Проверка прав: только создатель шага (учитель) может проверять
+            if (step.CreatorId != CurrentUserId) return Forbid();
+
+            // Находим ID ученика (второй участник группы)
+            var studentMember = await _context.GroupMembers
+                .FirstOrDefaultAsync(m => m.GroupId == step.GroupId && m.UserId != CurrentUserId);
+
+            if (req.Approve)
+            {
+                step.Status = Entities.TaskStatus.Done; // ПРИНЯТО
+                step.TeacherComment = null;
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(req.Comment))
+                    return BadRequest("При отклонении работы необходимо оставить комментарий.");
+
+                step.Status = Entities.TaskStatus.ToDo; // ВОЗВРАЩАЕМ В ТУДУ
+                step.TeacherComment = req.Comment;     // ОСТАВЛЯЕМ ПРАВКИ
+
+                // Уведомление ученику о правках
+                if (studentMember != null)
+                {
+                    _context.Notifications.Add(new Notification
+                    {
+                        UserId = studentMember.UserId,
+                        Title = "Нужны правки ✍️",
+                        Message = $"Учитель вернул работу: {step.Content}. Комментарий: {req.Comment}",
+                        Type = "TaskRejected",
+                        CreatedAt = DateTime.UtcNow,
+                        RoadmapStepId = step.Id
+                    });
+                }
+            }
+
+            await _context.SaveChangesAsync();
+            await _hubContext.Clients.Group(step.GroupId.ToString()).SendAsync("RoadmapUpdated");
+
+            return Ok(new { step.Id, Status = step.Status.ToString() });
         }
 
         [HttpPost("roadmap/comment")]
@@ -384,54 +423,6 @@ namespace Hive.Api.Controllers
             if (string.IsNullOrEmpty(testJson))
                 return BadRequest("GigaChat не смог сгенерировать тест");
             return Ok(new { testData = testJson });
-        }
-
-
-        [HttpPost("roadmap/verify")]
-        public async Task<IActionResult> VerifyStep([FromBody] VerifyStepRequest req)
-        {
-            var step = await _context.RoadmapSteps.FindAsync(req.StepId);
-            if (step == null) return NotFound();
-            if (step.CreatorId != CurrentUserId) return Forbid();
-
-            // Находим ID ученика (тот, кто в группе, но не создатель этого шага)
-            // В Solo-чате это просто второй участник.
-            var studentMember = await _context.GroupMembers
-                .FirstOrDefaultAsync(m => m.GroupId == step.GroupId && m.UserId != CurrentUserId);
-
-            if (req.Approve)
-            {
-                step.Status = Entities.TaskStatus.Done;
-                step.TeacherComment = null;
-            }
-            else
-            {
-                if (string.IsNullOrWhiteSpace(req.Comment))
-                    return BadRequest("Необходимо указать замечания");
-
-                step.Status = Entities.TaskStatus.ToDo;
-                step.TeacherComment = req.Comment;
-
-                // ОТПРАВКА УВЕДОМЛЕНИЯ УЧЕНИКУ
-                if (studentMember != null)
-                {
-                    _context.Notifications.Add(new Notification
-                    {
-                        UserId = studentMember.UserId,
-                        Title = "Задание не принято",
-                        Message = $"Учитель просит внести правки в: {step.Content}",
-                        Type = "TaskRejected",
-                        CreatedAt = DateTime.UtcNow,
-                        RoadmapStepId = step.Id,
-                        Data = step.GroupId.ToString() // Передаем ID группы для перехода
-                    });
-                }
-            }
-
-            await _context.SaveChangesAsync();
-            await _hubContext.Clients.Group(step.GroupId.ToString()).SendAsync("RoadmapUpdated");
-
-            return Ok(new { step.Id, Status = step.Status.ToString() });
         }
 
 

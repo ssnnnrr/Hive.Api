@@ -28,6 +28,28 @@ namespace Hive.Api.Controllers
 
             if (user == null) return NotFound();
 
+            // --- ЛОГИКА РАСЧЕТА BEEPOWER (Этап 4) ---
+            var reviews = user.ReviewsReceived;
+            double avgRating = reviews.Any() ? reviews.Average(r => (double)r.Rating) : 0;
+
+            // Считаем "Доводимость" (Completion Rate)
+            // Группы, где пользователь был учителем (Owner)
+            var totalGroupsAsTeacher = await _context.Groups
+                .CountAsync(g => g.OwnerId == id && g.IsSolo);
+
+            // Группы, которые завершены успешно (оба нажали "Завершить")
+            var finishedGroups = await _context.Groups
+                .CountAsync(g => g.OwnerId == id && g.IsSolo && g.OwnerFinished && g.PartnerFinished);
+
+            double completionRate = totalGroupsAsTeacher > 0
+                ? (double)finishedGroups / totalGroupsAsTeacher
+                : 0;
+
+            // Финальная формула рейтинга (BeePower) от 0.0 до 5.0
+            // 0.7 - вес оценок, 0.3 - вес доводимости (умножаем на 5 для шкалы)
+            double calculatedBeePower = (avgRating * 0.7) + (completionRate * 5.0 * 0.3);
+
+            // Статус отношений для отображения кнопок
             var request = await _context.ChatRequests
                 .FirstOrDefaultAsync(r => (r.SenderId == CurrentUserId && r.ReceiverId == id) ||
                                           (r.SenderId == id && r.ReceiverId == CurrentUserId));
@@ -35,18 +57,30 @@ namespace Hive.Api.Controllers
             string status = "None";
             if (request != null) status = request.Status == RequestStatus.Accepted ? "Accepted" : "Pending";
 
-            var rating = user.ReviewsReceived.Any() ? user.ReviewsReceived.Average(r => r.Rating) : 0;
-
-            return Ok(new UserProfileDto(
-                user.Id,
-                user.Username,
-                user.Email,
-                user.UserSkills.Select(us => new UserSkillDto(us.SkillId, us.Skill!.Name, us.Type.ToString())).ToList(),
-                user.ReviewsReceived.Select(r => new ReviewDto(r.Id, r.Rating, r.Comment, r.Reviewer!.Username, r.CreatedAt)).ToList(),
-                Math.Round(rating, 1),
-                status,
-                user.AvatarUrl // ПЕРЕДАЧА ФОТО
-            ));
+            return Ok(new
+            {
+                id = user.Id,
+                username = user.Username,
+                email = user.Email,
+                skills = user.UserSkills.Select(us => new {
+                    skillId = us.SkillId,
+                    skillName = us.Skill!.Name,
+                    type = us.Type.ToString(),
+                    isAiVerified = us.IsAiVerified // Этап 3
+                }),
+                reviews = user.ReviewsReceived.Select(r => new {
+                    id = r.Id,
+                    rating = r.Rating,
+                    comment = r.Comment,
+                    reviewerName = r.Reviewer!.Username,
+                    createdAt = r.CreatedAt
+                }),
+                rating = Math.Round(avgRating, 1), // Теперь здесь честный средний балл
+                beePower = Math.Round((avgRating * 0.7) + (completionRate * 5.0 * 0.3), 1), // Отдаем BeePower как основной рейтинг
+                completionRate = Math.Round(completionRate * 100, 0), // Доп. статистика для профиля
+                relationshipStatus = status,
+                avatarUrl = user.AvatarUrl
+            });
         }
 
         [HttpPut("me")]

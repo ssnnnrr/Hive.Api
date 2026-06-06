@@ -13,6 +13,9 @@ using System.Text.Json.Serialization;
 
 AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
+
+
+
 var builder = WebApplication.CreateBuilder(args);
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
@@ -54,8 +57,9 @@ builder.Services.AddCors(options =>
     });
 });
 
-
+builder.Services.AddSingleton<ModerationService>();
 builder.Services.AddScoped<AIService>();
+builder.Services.AddHostedService<DeadlineWorker>();
 builder.Services.AddSignalR();
 
 var jwtSecret = builder.Configuration["JwtSettings:Secret"] ?? "default_very_long_secret_key_32_chars_min";

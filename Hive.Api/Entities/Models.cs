@@ -5,14 +5,13 @@ using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Hive.Api.Entities
 {
-    // --- ВСЕ НЕОБХОДИМЫЕ ENUMS ---
     public enum TaskStatus { ToDo, UnderReview, Done }
     public enum RequestStatus { Pending, Accepted }
     public enum SkillType { Teaching, Learning }
     public enum GoalType { Social, Exchange, Group }
     public enum MaterialType { Link, File }
-    public enum TaskPriority { Low, Medium, High } // Добавлено для Program.cs
-    public enum UserRole { Admin, Member }           // Добавлено для Program.cs
+    public enum TaskPriority { Low, Medium, High } 
+    public enum UserRole { Admin, Member }         
 
     public class User
     {
@@ -145,6 +144,8 @@ namespace Hive.Api.Entities
         public long OwnerId { get; set; }
         [ForeignKey("OwnerId")] public virtual User? Owner { get; set; }
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+        public bool OwnerFinished { get; set; } = false; // Владелец подтвердил окончание
+        public bool PartnerFinished { get; set; } = false;
 
         public virtual ICollection<GroupMember> Members { get; set; } = new List<GroupMember>();
 
@@ -163,6 +164,7 @@ namespace Hive.Api.Entities
         public virtual User? User { get; set; }
     }
 
+
     public class RoadmapStep
     {
         [Key]
@@ -177,10 +179,7 @@ namespace Hive.Api.Entities
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public TaskStatus Status { get; set; } = TaskStatus.ToDo;
 
-        // --- ДОБАВЬТЕ ЭТО ПОЛЕ ---
         public int MaxAttempts { get; set; } = 3;
-        // -------------------------
-
         public int UsedAttempts { get; set; } = 0;
         public double? TestScore { get; set; }
 
@@ -188,12 +187,17 @@ namespace Hive.Api.Entities
         public string? TeacherComment { get; set; }
         public string? StudentComment { get; set; }
         public string? InstructionUrl { get; set; }
+
         public bool IsTest { get; set; } = false;
         public string? TestData { get; set; }
         public bool IsRequired { get; set; } = true;
 
+        // НОВОЕ ПОЛЕ:
+        public bool IsArchived { get; set; } = false;
+
         public virtual ICollection<RoadmapStepComment> StepComments { get; set; } = new List<RoadmapStepComment>();
     }
+
 
     public class RoadmapStepComment
     {
@@ -240,7 +244,17 @@ namespace Hive.Api.Entities
     }
 
     public class Skill { [Key] public long Id { get; set; } public string Name { get; set; } = null!; }
-    public class UserSkill { public long UserId { get; set; } public long SkillId { get; set; } public SkillType Type { get; set; } public virtual Skill? Skill { get; set; } }
+    public class UserSkill
+    {
+        public long UserId { get; set; }
+        public long SkillId { get; set; }
+        public SkillType Type { get; set; }
+        public virtual Skill? Skill { get; set; }
+
+        // --- НОВЫЕ ПОЛЯ ДЛЯ ВЕРИФИКАЦИИ ---
+        public bool IsAiVerified { get; set; } = false; // Подтверждено ли ИИ-тестом
+        public DateTime? VerifiedAt { get; set; }        // Дата прохождения теста
+    }
     public class ChatMessage
     {
         [Key]

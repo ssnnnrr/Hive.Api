@@ -24,14 +24,34 @@ namespace Hive.Api.Controllers
         [HttpPost("sync")]
         public async Task<IActionResult> SyncSkills([FromBody] SyncSkillsRequest req)
         {
-            if (!Enum.TryParse<SkillType>(req.Type, out var skillType)) return BadRequest("Неверный тип навыка");
+            if (!Enum.TryParse<SkillType>(req.Type, out var skillType))
+                return BadRequest("Неверный тип навыка");
 
-            var existingSkills = _context.UserSkills.Where(us => us.UserId == CurrentUserId && us.Type == skillType);
-            _context.UserSkills.RemoveRange(existingSkills);
+            // 1. Получаем текущие навыки этого типа
+            var existingUserSkills = await _context.UserSkills
+                .Where(us => us.UserId == CurrentUserId && us.Type == skillType)
+                .ToListAsync();
 
+            var existingIds = existingUserSkills.Select(s => s.SkillId).ToList();
+
+            // 2. Удаляем те, которых больше нет в новом списке
+            var toRemove = existingUserSkills.Where(es => !req.SkillIds.Contains(es.SkillId)).ToList();
+            if (toRemove.Any()) _context.UserSkills.RemoveRange(toRemove);
+
+            // 3. Добавляем только те, которых еще нет в базе
             foreach (var skillId in req.SkillIds)
             {
-                _context.UserSkills.Add(new UserSkill { UserId = CurrentUserId, SkillId = skillId, Type = skillType });
+                if (!existingIds.Contains(skillId))
+                {
+                    _context.UserSkills.Add(new UserSkill
+                    {
+                        UserId = CurrentUserId,
+                        SkillId = skillId,
+                        Type = skillType,
+                        IsAiVerified = false // Новые навыки по умолчанию не верифицированы
+                    });
+                }
+                // Если навык уже был в базе, мы его НЕ ТРОГАЕМ (IsAiVerified остается прежним)
             }
 
             await _context.SaveChangesAsync();
@@ -43,21 +63,18 @@ namespace Hive.Api.Controllers
         {
             var myId = CurrentUserId;
 
-            // Получаем мои навыки для расчета мэтча
             var mySkills = await _context.UserSkills.Where(us => us.UserId == myId).ToListAsync();
             var myTeachingIds = mySkills.Where(s => s.Type == SkillType.Teaching).Select(s => s.SkillId).ToList();
             var myLearningIds = mySkills.Where(s => s.Type == SkillType.Learning).Select(s => s.SkillId).ToList();
 
             var usersQuery = _context.Users
-                .Include(u => u.UserSkills)
+                .Include(u => u.UserSkills).ThenInclude(us => us.Skill)
                 .Include(u => u.ReviewsReceived)
                 .Where(u => u.Id != myId);
 
-            // Фильтр по строке
             if (!string.IsNullOrEmpty(query))
                 usersQuery = usersQuery.Where(u => u.Username.Contains(query) || u.Email.Contains(query));
 
-            // Фильтр по категории навыка
             if (skillId.HasValue && skillId > 0)
             {
                 var sType = Enum.Parse<SkillType>(type);
@@ -66,40 +83,42 @@ namespace Hive.Api.Controllers
 
             var users = await usersQuery.ToListAsync();
 
-            // Внутри метода SearchPartners
             var result = users.Select(u =>
             {
-                var uTeaching = u.UserSkills.Where(s => s.Type == SkillType.Teaching).Select(s => s.SkillId).ToList();
-                var uLearning = u.UserSkills.Where(s => s.Type == SkillType.Learning).Select(s => s.SkillId).ToList();
+                var uTeaching = u.UserSkills.Where(s => s.Type == SkillType.Teaching).ToList();
+                var uLearning = u.UserSkills.Where(s => s.Type == SkillType.Learning).ToList();
 
-                // Проверяем, заполнил ли пользователь хотя бы что-то
-                bool hasAnySkills = uTeaching.Any() || uLearning.Any();
+                var giveSkills = myTeachingIds.Intersect(uLearning.Select(s => s.SkillId))
+                    .Select(id => uLearning.First(s => s.SkillId == id).Skill.Name).ToList();
 
-                // Synergy: Я учу тому, что он ищет + Он учит тому, что ищу я
-                var giveSkills = myTeachingIds.Intersect(uLearning)
-                    .Join(_context.Skills, id => id, s => s.Id, (id, s) => s.Name).ToList();
-                var takeSkills = uTeaching.Intersect(myLearningIds)
-                    .Join(_context.Skills, id => id, s => s.Id, (id, s) => s.Name).ToList();
+                var takeSkills = uTeaching.Select(s => s.SkillId).Intersect(myLearningIds)
+                    .Select(id => uTeaching.First(s => s.SkillId == id).Skill.Name).ToList();
 
-                bool isIdealMatch = giveSkills.Any() && takeSkills.Any();
+                string synergyLevel = "None";
+                if (giveSkills.Any() && takeSkills.Any()) synergyLevel = "Ideal";
+                else if (giveSkills.Any() || takeSkills.Any()) synergyLevel = "Match";
+
+                // РАСЧЕТ РЕЙТИНГА С ЗАЩИТОЙ ОТ ОШИБОК
+                double avgRating = u.ReviewsReceived.Any() ? u.ReviewsReceived.Average(r => (double)r.Rating) : 0;
+
+                // Если результат расчета не число (NaN) или бесконечность — ставим 0
+                if (double.IsNaN(avgRating) || double.IsInfinity(avgRating)) avgRating = 0;
 
                 return new UserDto(
                     u.Id,
                     u.Username,
                     u.Email,
-                    isIdealMatch ? "Ideal" : "None",
+                    synergyLevel,
                     u.AvatarUrl,
-                    giveSkills, // MatchTeaching
-                    takeSkills  // MatchLearning
-                )
-                {
-                    // Можно добавить в модель UserDto поле IsNewcomer или HasSkills
-                    // Если у пользователя нет навыков вообще, пометим его
-                };
-            }).OrderByDescending(u => u.SynergyLevel == "Ideal")
-   .ThenBy(u => u.MatchTeaching.Count + u.MatchLearning.Count == 0) // Пустые профили в конец, но они есть
-   .ToList();
-
+                    giveSkills,
+                    takeSkills,
+                    u.UserSkills.Any(us => us.IsAiVerified && us.Type == SkillType.Teaching),
+                    Math.Round(avgRating, 1) // Округление до 1 знака
+                );
+            })
+            .OrderByDescending(u => u.IsVerified)
+            .ThenByDescending(u => u.Rating)
+            .ToList();
 
             return Ok(result);
         }

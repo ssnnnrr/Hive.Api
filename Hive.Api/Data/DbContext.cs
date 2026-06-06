@@ -27,6 +27,8 @@ namespace Hive.Api.Data
         public DbSet<RoadmapStepComment> StepComments { get; set; }
         public DbSet<GoalCollaboration> GoalCollaborations { get; set; }
 
+
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);

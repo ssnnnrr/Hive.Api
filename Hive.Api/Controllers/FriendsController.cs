@@ -53,20 +53,12 @@ namespace Hive.Api.Controllers
         [HttpGet("pending-requests")]
         public async Task<IActionResult> GetPendingRequests()
         {
-            // Ищем запросы, где получатель — текущий юзер, а статус — Ожидание
-            var requests = await _context.ChatRequests
+            return Ok(await _context.ChatRequests
                 .Where(r => r.ReceiverId == CurrentUserId && r.Status == RequestStatus.Pending)
-                .Include(r => r.Sender)
-                .Select(r => new {
-                    Id = r.Id, // ID самого запроса для Accept/Decline
-                    SenderId = r.SenderId,
-                    SenderName = r.Sender.Username,
-                    AvatarUrl = r.Sender.AvatarUrl
-                })
-                .ToListAsync();
-
-            return Ok(requests);
+                .Select(r => new { r.Id, r.SenderId, SenderName = r.Sender.Username, AvatarUrl = r.Sender.AvatarUrl })
+                .ToListAsync());
         }
+
 
         [HttpPost("request/{targetId}")]
         public async Task<IActionResult> SendRequest(long targetId)

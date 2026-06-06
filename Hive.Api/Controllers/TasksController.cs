@@ -111,12 +111,7 @@ namespace Hive.Api.Controllers
         [HttpPatch("{id}/status")]
         public async Task<IActionResult> UpdateStatus(long id, [FromBody] UpdateStatusRequest req)
         {
-            Console.WriteLine($"[BACKEND LOG]: Updating task {id} to {req.Status}");
-
-            var task = await _context.Tasks
-                .Include(t => t.Goal)
-                .FirstOrDefaultAsync(t => t.Id == id);
-
+            var task = await _context.Tasks.Include(t => t.Goal).FirstOrDefaultAsync(t => t.Id == id);
             if (task == null) return NotFound();
 
             var existingCompletion = await _context.TaskCompletions
@@ -124,6 +119,7 @@ namespace Hive.Api.Controllers
 
             if (req.Status == "Done")
             {
+                task.Status = Entities.TaskStatus.Done; // ОБЯЗАТЕЛЬНО обновляем статус задачи
                 if (existingCompletion == null)
                 {
                     _context.TaskCompletions.Add(new TaskCompletion
@@ -132,23 +128,16 @@ namespace Hive.Api.Controllers
                         UserId = CurrentUserId,
                         CompletedAt = DateTime.UtcNow
                     });
-                    Console.WriteLine($"[BACKEND LOG]: Saved Done status for Task {id}, User {CurrentUserId}");
                 }
             }
             else
             {
-                if (existingCompletion != null)
-                {
-                    _context.TaskCompletions.Remove(existingCompletion);
-                    Console.WriteLine($"[BACKEND LOG]: Removed Done status (set to ToDo) for Task {id}");
-                }
+                task.Status = Entities.TaskStatus.ToDo; // Возвращаем в ToDo
+                if (existingCompletion != null) _context.TaskCompletions.Remove(existingCompletion);
             }
 
             await _context.SaveChangesAsync();
-
-            // *** ВЫЗЫВАЕМ ОБНОВЛЕНИЕ ПРОГРЕССА ЦЕЛИ ***
             await UpdateGoalProgress(task.GoalId);
-
             return Ok();
         }
 

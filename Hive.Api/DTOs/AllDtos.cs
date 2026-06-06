@@ -11,16 +11,23 @@ namespace Hive.Api.DTOs
     public record RegisterRequest(string Username, string Email, string Password);
     public record AuthResponse(string Token, UserDto User);
     public record UserDto(
-        long Id,
-        string Username,
-        string Email,
-        string SynergyLevel,
-        string? AvatarUrl,
-        List<string>? MatchTeaching = null,
-        List<string>? MatchLearning = null
-    );
+    long Id,
+    string Username,
+    string Email,
+    string SynergyLevel,
+    string? AvatarUrl,
+    List<string>? MatchTeaching = null,
+    List<string>? MatchLearning = null,
+    bool IsVerified = false,
+    double Rating = 0// Добавьте это поле
+);
     public record UserProfileDto(long Id, string Username, string Email, List<UserSkillDto> Skills, List<ReviewDto> Reviews, double Rating, string RelationshipStatus, string? AvatarUrl);
-    public record UserSkillDto(long SkillId, string skillName, string Type);
+    public record UserSkillDto(
+    long SkillId,
+    string SkillName,
+    string Type,
+    bool IsAiVerified // Добавлено для Этапа 1
+);
     public record SkillDto(long Id, string Name);
     public record SyncSkillsRequest(List<long> SkillIds, string Type);
     public record UpdateProfileRequest(string Username, string? NewPassword, string? ConfirmPassword, bool IsPrivate, string? AvatarUrl);
@@ -232,12 +239,17 @@ public class UpdateStatusRequest
         public string Name { get; set; }
         public string? Description { get; set; }
         public string OwnerName { get; set; }
+        public long OwnerId { get; set; } // Добавлено
         public int MembersCount { get; set; }
         public bool IsSolo { get; set; }
         public long? OtherUserId { get; set; }
+        public string? LastMessage { get; set; }
         public DateTime? LastMessageAt { get; set; }
         public int UnreadCount { get; set; }
-        public string? LastMessage { get; set; } // Добавляем поле
+
+        // Добавленные флаги завершения для UI
+        public bool OwnerFinished { get; set; } // Добавлено
+        public bool PartnerFinished { get; set; } // Добавлено
     }
 
 
@@ -247,11 +259,16 @@ public class UpdateStatusRequest
         public string Name { get; set; }
         public long OwnerId { get; set; }
         public bool IsSolo { get; set; }
-        public List<UserBriefDto> Members { get; set; }
+
+        // Добавленные флаги завершения
+        public bool OwnerFinished { get; set; } // Добавлено
+        public bool PartnerFinished { get; set; } // Добавлено
+
+        public List<UserBriefDto> Members { get; set; } = new();
     }
 
 
-        public class SubmitStepRequestDto
+    public class SubmitStepRequestDto
         {
             public long StepId { get; set; }
             public string? StudentComment { get; set; }
@@ -264,7 +281,19 @@ public class UpdateStatusRequest
     // Было: public record SubmitTestAttemptRequest(long StepId, double Score);
     // СТАЛО:
     public record SubmitTestAttemptRequest(long StepId, double Score, string? AnswersJson);
+    public record VerificationTestRequest(long SkillId);
 
+    // Результат теста верификации
+    public record VerificationSubmitRequest(long SkillId, double Score);
+
+    // Сдача практической работы
+    public record SubmitWorkRequest(long StepId, string ArtifactUrl, string? StudentComment);
+
+    // Проверка учителем
+    public record VerifyWorkRequest(long StepId, bool Approve, string? Comment);
+
+    // Отзыв
+    public record LeaveReviewRequest(long ReviewedId, short Rating, string? Comment);
     public class UserBriefDto
     {
         public long Id { get; set; }

@@ -243,8 +243,14 @@ namespace Hive.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<bool>("OwnerFinished")
+                        .HasColumnType("boolean");
+
                     b.Property<long>("OwnerId")
                         .HasColumnType("bigint");
+
+                    b.Property<bool>("PartnerFinished")
+                        .HasColumnType("boolean");
 
                     b.HasKey("Id");
 
@@ -467,6 +473,9 @@ namespace Hive.Api.Migrations
                     b.Property<string>("InstructionUrl")
                         .HasColumnType("text");
 
+                    b.Property<bool>("IsArchived")
+                        .HasColumnType("boolean");
+
                     b.Property<bool>("IsRequired")
                         .HasColumnType("boolean");
 
@@ -659,6 +668,12 @@ namespace Hive.Api.Migrations
 
                     b.Property<int>("Type")
                         .HasColumnType("integer");
+
+                    b.Property<bool>("IsAiVerified")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("VerifiedAt")
+                        .HasColumnType("timestamp without time zone");
 
                     b.HasKey("UserId", "SkillId", "Type");
 

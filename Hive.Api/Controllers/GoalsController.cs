@@ -28,37 +28,29 @@ namespace Hive.Api.Controllers
         [HttpGet("user/{userId}")]
         public async Task<IActionResult> GetUserGoals(long userId)
         {
+            // Id того, кто сейчас авторизован (через токен)
+            var currentRequestUserId = CurrentUserId;
+
             var goals = await _context.Goals
                     .Include(g => g.User)
-                    .Include(g => g.Tasks)
-                        .ThenInclude(t => t.Comments)
-                        .ThenInclude(c => c.User)
-                    .Include(g => g.Tasks)
-                        .ThenInclude(t => t.Completions)
-                        .ThenInclude(tc => tc.User)
-                    .Include(g => g.Materials)
-                        .ThenInclude(m => m.Creator)
-                    .Include(g => g.Materials)
-                        .ThenInclude(m => m.Task)
-                    .Include(g => g.Collaborations)
-                        .ThenInclude(c => c.User)
+                    .Include(g => g.Tasks).ThenInclude(t => t.Completions)
+                    .Include(g => g.Collaborations).ThenInclude(c => c.User)
+                    .Include(g => g.Materials).ThenInclude(m => m.Task)
                     .Where(g => g.UserId == userId || g.Collaborations.Any(c => c.UserId == userId))
                     .ToListAsync();
 
             var res = goals.Select(g => {
-                var activeMemberIds = g.Collaborations
-                    .Where(c => c.IsConfirmed)
-                    .Select(c => c.UserId)
-                    .ToList();
-                activeMemberIds.Add(g.UserId);
+                // РАСЧЕТ ПЕРСОНАЛЬНОГО ПРОГРЕССА ДЛЯ ТЕКУЩЕГО ПОЛЬЗОВАТЕЛЯ
+                // Считаем сколько задач выполнил именно этот юзер в этой цели
+                var myDoneTasksCount = g.Tasks.Count(t => t.Completions.Any(tc => tc.UserId == currentRequestUserId));
+                double personalProgress = g.Tasks.Any()
+                    ? (double)myDoneTasksCount / g.Tasks.Count * 100
+                    : 0;
 
+                // Расчет прогресса для других участников команды (для блока Команда)
                 var collaborationsWithProgress = g.Collaborations.Select(c => {
-                    var partnerTasksDone = g.Tasks.Count(t =>
-                        t.Completions.Any(tc => tc.UserId == c.UserId));
-
-                    double partnerProgress = g.Tasks.Any()
-                        ? (double)partnerTasksDone / g.Tasks.Count * 100
-                        : 0;
+                    var partnerTasksDone = g.Tasks.Count(t => t.Completions.Any(tc => tc.UserId == c.UserId));
+                    double partnerProgress = g.Tasks.Any() ? (double)partnerTasksDone / g.Tasks.Count * 100 : 0;
 
                     return new GoalPartnerDto(
                         c.UserId,
@@ -75,46 +67,21 @@ namespace Hive.Api.Controllers
                     g.Title,
                     g.Description,
                     g.MeasurableResult,
-                    g.Progress,
+                    personalProgress, // ТЕПЕРЬ ТУТ ВСЕГДА ЛИЧНЫЙ ПРОГРЕСС
                     g.TargetDate,
                     g.IsSolo,
                     g.Type.ToString(),
                     g.Tasks.Select(t => new TaskResponse(
-                        t.Id,
-                        t.Title,
-                        t.DueDate,
-                        t.Status.ToString(),
-                        t.GoalId,
-                        g.Title,
-                        t.CreatorId,
-                        t.AssigneeId,
-                        t.ArtifactUrl,
-                        t.StudentComment,
-                        t.TeacherComment,
-                        t.Completions
-                            .Where(tc => activeMemberIds.Contains(tc.UserId))
-                            .Select(tc => new UserMinimalDto(
-                                tc.User?.Username ?? "Аноним",
-                                tc.User?.AvatarUrl
-                            )).ToList(),
-                        t.Comments.Select(c => new TaskCommentDto(
-                            c.Id, c.UserId, c.User?.Username ?? "Аноним",
-                            c.User?.AvatarUrl, c.Text, c.CreatedAt
-                        )).ToList(),
+                        t.Id, t.Title, t.DueDate, t.Status.ToString(), t.GoalId, g.Title,
+                        t.CreatorId, t.AssigneeId, t.ArtifactUrl, t.StudentComment, t.TeacherComment,
+                        t.Completions.Select(tc => new UserMinimalDto(tc.User?.Username ?? "Аноним", tc.User?.AvatarUrl)).ToList(),
+                        t.Comments.Select(c => new TaskCommentDto(c.Id, c.UserId, c.User?.Username ?? "Аноним", c.User?.AvatarUrl, c.Text, c.CreatedAt)).ToList(),
                         g.IsSolo
                     )).ToList(),
                     collaborationsWithProgress,
                     g.Materials.Select(m => new MaterialDto(
-                        m.Id,
-                        m.Title,
-                        m.Content,
-                        m.Type.ToString(),
-                        m.CreatorId,
-                        m.Creator?.Username ?? "Система",
-                        m.Creator?.AvatarUrl,
-                        m.CreatedAt,
-                        (int?)m.TaskId,
-                        m.Task?.Title
+                        m.Id, m.Title, m.Content, m.Type.ToString(), m.CreatorId, m.Creator?.Username ?? "Система",
+                        m.Creator?.AvatarUrl, m.CreatedAt, (int?)m.TaskId, m.Task?.Title
                     )).ToList(),
                     g.UserId
                 );
@@ -363,79 +330,96 @@ namespace Hive.Api.Controllers
             return Ok();
         }
 
+        // Hive.Api/Controllers/GoalsController.cs
+
         [HttpPost("materials/upload")]
+        [Consumes("multipart/form-data")] // Указываем тип контента явно
         public async Task<IActionResult> UploadMaterial([FromForm] UploadMaterialRequest req)
         {
-            var goal = await _context.Goals
-                .Include(g => g.Collaborations)
-                .FirstOrDefaultAsync(g => g.Id == req.GoalId);
-
-            if (goal == null) return NotFound();
-
-            bool isPartner = goal.Collaborations.Any(c => c.UserId == CurrentUserId && c.IsConfirmed);
-            if (goal.UserId != CurrentUserId && !isPartner) return Forbid();
-
-            string fileUrl = "";
-            if (req.File != null && req.File.Length > 0)
+            try
             {
-                var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "materials");
-                if (!Directory.Exists(uploadsFolder))
-                    Directory.CreateDirectory(uploadsFolder);
+                var goal = await _context.Goals
+                    .Include(g => g.Collaborations)
+                    .FirstOrDefaultAsync(g => g.Id == req.GoalId);
 
-                var uniqueFileName = $"{Guid.NewGuid()}_{req.File.FileName}";
-                var filePath = Path.Combine(uploadsFolder, uniqueFileName);
+                if (goal == null) return NotFound(new { message = "Цель не найдена" });
 
-                using (var stream = new FileStream(filePath, FileMode.Create))
+                // Проверка прав
+                bool isPartner = goal.Collaborations.Any(c => c.UserId == CurrentUserId && c.IsConfirmed);
+                if (goal.UserId != CurrentUserId && !isPartner) return Forbid();
+
+                string fileUrl = "";
+                if (req.File != null && req.File.Length > 0)
                 {
-                    await req.File.CopyToAsync(stream);
+                    // 1. Создаем путь к папке (wwwroot/uploads/materials)
+                    var uploadsFolder = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "materials");
+
+                    // КРИТИЧНО: Проверяем и создаем папку, если её нет
+                    if (!Directory.Exists(uploadsFolder))
+                        Directory.CreateDirectory(uploadsFolder);
+
+                    // 2. Генерируем уникальное имя
+                    var uniqueFileName = $"{Guid.NewGuid()}_{Path.GetFileName(req.File.FileName)}";
+                    var filePath = Path.Combine(uploadsFolder, uniqueFileName);
+
+                    // 3. Сохраняем файл на диск
+                    using (var stream = new FileStream(filePath, FileMode.Create))
+                    {
+                        await req.File.CopyToAsync(stream);
+                    }
+
+                    // URL для доступа с фронтенда
+                    fileUrl = $"/uploads/materials/{uniqueFileName}";
+                }
+                else
+                {
+                    return BadRequest(new { message = "Файл не был передан" });
                 }
 
-                fileUrl = $"/uploads/materials/{uniqueFileName}";
+                // 4. Создаем запись в БД
+                var material = new Material
+                {
+                    GoalId = req.GoalId,
+                    Title = req.Title,
+                    Content = fileUrl,
+                    Type = MaterialType.File,
+                    TaskId = req.TaskId,
+                    CreatorId = CurrentUserId,
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                _context.Materials.Add(material);
+                await _context.SaveChangesAsync();
+
+                // Подгружаем заголовок задачи для ответа, если она есть
+                string? taskTitle = null;
+                if (req.TaskId.HasValue)
+                {
+                    var task = await _context.Tasks.FindAsync(req.TaskId.Value);
+                    taskTitle = task?.Title;
+                }
+
+                var user = await _context.Users.FindAsync(CurrentUserId);
+
+                return Ok(new MaterialDto(
+                    material.Id,
+                    material.Title,
+                    material.Content,
+                    "File",
+                    material.CreatorId,
+                    user?.Username ?? "Система",
+                    user?.AvatarUrl,
+                    material.CreatedAt,
+                    (int?)material.TaskId,
+                    taskTitle
+                ));
             }
-            else if (!string.IsNullOrEmpty(req.Content))
+            catch (Exception ex)
             {
-                fileUrl = req.Content;
+                // Логируем реальную ошибку в консоль сервера
+                Console.WriteLine($"[UPLOAD ERROR]: {ex.Message}");
+                return StatusCode(500, new { message = "Ошибка на сервере при сохранении файла", detail = ex.Message });
             }
-            else
-            {
-                return BadRequest("Необходимо предоставить файл или ссылку");
-            }
-
-            var material = new Material
-            {
-                GoalId = req.GoalId,
-                Title = req.Title,
-                Content = fileUrl,
-                Type = req.File != null ? MaterialType.File : MaterialType.Link,
-                TaskId = req.TaskId,
-                CreatorId = CurrentUserId,
-                CreatedAt = DateTime.UtcNow
-            };
-
-            _context.Materials.Add(material);
-            await _context.SaveChangesAsync();
-
-            string? taskTitle = null;
-            if (req.TaskId.HasValue)
-            {
-                var task = await _context.Tasks.FindAsync(req.TaskId.Value);
-                taskTitle = task?.Title;
-            }
-
-            var user = await _context.Users.FindAsync(CurrentUserId);
-
-            return Ok(new MaterialDto(
-                material.Id,
-                material.Title,
-                material.Content,
-                material.Type.ToString(),
-                material.CreatorId,
-                user?.Username ?? "Система",
-                user?.AvatarUrl,
-                material.CreatedAt,
-                (int?)material.TaskId,
-                taskTitle
-            ));
         }
 
         [HttpPost]

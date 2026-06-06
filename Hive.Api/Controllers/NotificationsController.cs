@@ -1,7 +1,9 @@
 ﻿using Hive.Api.Data;
 using Hive.Api.Entities;
+using Hive.Api.Hubs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
@@ -13,21 +15,29 @@ namespace Hive.Api.Controllers
     public class NotificationsController : ControllerBase
     {
         private readonly HiveDbContext _context;
-        public NotificationsController(HiveDbContext context) => _context = context;
+        private readonly IHubContext<ChatHub> _hubContext;
+
+        public NotificationsController(HiveDbContext context, IHubContext<ChatHub> hubContext)
+        {
+            _context = context;
+            _hubContext = hubContext;
+        }
+
         private long CurrentUserId => long.Parse(User.FindFirst(ClaimTypes.NameIdentifier)!.Value);
 
         [HttpGet]
         public async Task<IActionResult> GetMyNotifications()
         {
-            var now = DateTime.UtcNow;
-            var today = now.Date;
+            // 1. УЧЕТ МОСКОВСКОГО ВРЕМЕНИ (UTC+3)
+            var nowUtc = DateTime.UtcNow;
+            var moscowNow = nowUtc.AddHours(3);
+            var todayMoscow = moscowNow.Date;
 
-            // 1. ПОЛУЧАЕМ ТЕКУЩИЕ НЕПРОЧИТАННЫЕ УВЕДОМЛЕНИЯ
             var existingNotes = await _context.Notifications
                 .Where(n => n.UserId == CurrentUserId && !n.IsRead)
                 .ToListAsync();
 
-            // --- ЛОГИКА ОЧИСТКИ (Удаляем из БД, если больше не просрочено) ---
+            // --- ОЧИСТКА РЕШЕННЫХ УВЕДОМЛЕНИЙ ---
             var overdueTypes = new[] { "EventOverdue", "TaskOverdue", "RoadmapOverdue" };
             var notesToDelete = new List<Notification>();
 
@@ -35,28 +45,24 @@ namespace Hive.Api.Controllers
             {
                 if (long.TryParse(note.Data, out long entityId))
                 {
-                    bool stillOverdue = false;
+                    bool isResolved = false;
                     if (note.Type == "EventOverdue")
-                        stillOverdue = await _context.Events.AnyAsync(e => e.Id == entityId && !e.IsCompleted && e.EventDate < now);
+                        isResolved = await _context.Events.AnyAsync(e => e.Id == entityId && (e.IsCompleted || e.EventDate >= nowUtc));
                     else if (note.Type == "TaskOverdue")
-                        stillOverdue = await _context.Tasks.AnyAsync(t => t.Id == entityId && t.Status != Entities.TaskStatus.Done && t.DueDate < today);
+                        isResolved = await _context.Tasks.AnyAsync(t => t.Id == entityId && (t.Status == Entities.TaskStatus.Done || t.DueDate.AddHours(3).Date >= todayMoscow));
                     else if (note.Type == "RoadmapOverdue")
-                        stillOverdue = await _context.RoadmapSteps.AnyAsync(s => s.Id == entityId && s.Status != Entities.TaskStatus.Done && s.DueDate < today);
+                        isResolved = await _context.RoadmapSteps.AnyAsync(s => s.Id == entityId && (s.Status == Entities.TaskStatus.Done || s.DueDate.AddHours(3).Date >= todayMoscow));
 
-                    if (!stillOverdue) notesToDelete.Add(note);
+                    if (isResolved) notesToDelete.Add(note);
                 }
             }
-            if (notesToDelete.Any())
-            {
-                _context.Notifications.RemoveRange(notesToDelete);
-                existingNotes.RemoveAll(n => notesToDelete.Contains(n));
-            }
+            if (notesToDelete.Any()) _context.Notifications.RemoveRange(notesToDelete);
 
-            // --- ЛОГИКА ГЕНЕРАЦИИ (Создаем новые просрочки) ---
+            // --- ГЕНЕРАЦИЯ ПРОСРОЧЕК ---
 
-            // 1. СОБЫТИЯ (Просрочено, если прошла 1 минута от EventDate)
+            // 1. СОБЫТИЯ (Просрочено минута в минуту по UTC)
             var overdueEvents = await _context.Events
-                .Where(e => e.CreatorId == CurrentUserId && !e.IsCompleted && e.EventDate < now.AddMinutes(-1))
+                .Where(e => e.CreatorId == CurrentUserId && !e.IsCompleted && e.EventDate < nowUtc)
                 .ToListAsync();
 
             foreach (var ev in overdueEvents)
@@ -67,17 +73,17 @@ namespace Hive.Api.Controllers
                     {
                         UserId = CurrentUserId,
                         Title = "Событие пропущено! ⚠️",
-                        Message = $"Вы пропустили: {ev.Title}",
-                        CreatedAt = now,
+                        Message = $"Вы пропустили время: {ev.Title}",
+                        CreatedAt = nowUtc,
                         Type = "EventOverdue",
                         Data = ev.Id.ToString()
                     });
                 }
             }
 
-            // 2. ШАГИ К ЦЕЛИ (Просрочено, если день DueDate уже прошел)
+            // 2. ШАГИ К ЦЕЛИ (Просрочено, если день дедлайна по МСК прошел)
             var overdueTasks = await _context.Tasks
-                .Where(t => t.CreatorId == CurrentUserId && t.Status != Entities.TaskStatus.Done && t.DueDate < today)
+                .Where(t => t.CreatorId == CurrentUserId && t.Status != Entities.TaskStatus.Done && t.DueDate.AddHours(3).Date < todayMoscow)
                 .ToListAsync();
 
             foreach (var task in overdueTasks)
@@ -88,8 +94,8 @@ namespace Hive.Api.Controllers
                     {
                         UserId = CurrentUserId,
                         Title = "Шаг к цели пропущен! ✍️",
-                        Message = $"Не выполнено: {task.Title}",
-                        CreatedAt = now,
+                        Message = $"Дедлайн истек: {task.Title}",
+                        CreatedAt = nowUtc,
                         Type = "TaskOverdue",
                         Data = task.Id.ToString()
                     });
@@ -99,7 +105,7 @@ namespace Hive.Api.Controllers
             // 3. ЗАДАНИЯ ИЗ ЧАТОВ (Roadmap)
             var myGroupIds = await _context.GroupMembers.Where(gm => gm.UserId == CurrentUserId).Select(gm => gm.GroupId).ToListAsync();
             var overdueSteps = await _context.RoadmapSteps
-                .Where(s => myGroupIds.Contains(s.GroupId) && s.CreatorId != CurrentUserId && s.Status != Entities.TaskStatus.Done && s.DueDate < today)
+                .Where(s => myGroupIds.Contains(s.GroupId) && s.CreatorId != CurrentUserId && s.Status != Entities.TaskStatus.Done && s.DueDate.AddHours(3).Date < todayMoscow)
                 .ToListAsync();
 
             foreach (var step in overdueSteps)
@@ -109,9 +115,9 @@ namespace Hive.Api.Controllers
                     _context.Notifications.Add(new Notification
                     {
                         UserId = CurrentUserId,
-                        Title = "Задание из чата пропущено! 🔔",
-                        Message = $"Срочно сдай: {step.Content}",
-                        CreatedAt = now,
+                        Title = "Задание просрочено! 🔔",
+                        Message = $"Срок сдачи вышел: {step.Content}",
+                        CreatedAt = nowUtc,
                         Type = "RoadmapOverdue",
                         Data = step.Id.ToString()
                     });
@@ -128,8 +134,9 @@ namespace Hive.Api.Controllers
         {
             var note = await _context.Notifications.FindAsync(id);
             if (note == null || note.UserId != CurrentUserId) return NotFound();
-            note.IsRead = true;
+            _context.Notifications.Remove(note);
             await _context.SaveChangesAsync();
+            await _hubContext.Clients.User(CurrentUserId.ToString()).SendAsync("NotificationDeleted", id);
             return Ok();
         }
     }
