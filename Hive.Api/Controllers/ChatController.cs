@@ -63,7 +63,6 @@ namespace Hive.Api.Controllers
         [HttpPost("send")]
         public async Task<IActionResult> SendMessage([FromBody] SendMessageRequest req)
         {
-            // Проверяем членство в группе
             var isMember = await _context.GroupMembers
                 .AnyAsync(gm => gm.GroupId == req.GroupId && gm.UserId == CurrentUserId);
 
@@ -135,7 +134,6 @@ namespace Hive.Api.Controllers
 
             await _context.SaveChangesAsync();
 
-            // Оповещаем группу, чтобы чекбокс изменился у обоих мгновенно
             await _hubContext.Clients.Group(step.GroupId.ToString()).SendAsync("RoadmapUpdated");
 
             return Ok(new { step.Id, Status = step.Status.ToString() });
@@ -227,25 +225,17 @@ namespace Hive.Api.Controllers
                 Status = Entities.TaskStatus.ToDo,
                 IsTest = req.IsTest,
                 IsRequired = req.IsRequired,
-                MaxAttempts = req.MaxAttempts // ИСПРАВЛЕНО: просто присваиваем значение из DTO
+                MaxAttempts = req.MaxAttempts,
+                // ДОБАВЬТЕ ЭТУ СТРОЧКУ:
+                TestData = req.TestData // Теперь тест сохраняется сразу!
             };
 
             _context.RoadmapSteps.Add(step);
             await _context.SaveChangesAsync();
-            await _hubContext.Clients.Group(req.GroupId.ToString())
-            .SendAsync("RoadmapUpdated");
 
-            return Ok(new
-            {
-                step.Id,
-                step.Content,
-                step.DueDate,
-                Status = step.Status.ToString(),
-                step.CreatorId,
-                step.IsTest,
-                step.IsRequired,
-                step.MaxAttempts
-            });
+            await _hubContext.Clients.Group(req.GroupId.ToString()).SendAsync("RoadmapUpdated");
+
+            return Ok(step);
         }
 
         [HttpGet("download/{fileName}")]
@@ -635,8 +625,6 @@ namespace Hive.Api.Controllers
 
                 await _context.SaveChangesAsync();
 
-                // 4. Оповещаем остальных участников через SignalR (опционально)
-                // Это позволит отображать галочки "прочитано" на стороне отправителя
                 await _hubContext.Clients.Group(groupId.ToString())
                     .SendAsync("MessagesRead", new { groupId, readerId = CurrentUserId });
             }

@@ -60,7 +60,6 @@ namespace Hive.Api.Services
             var token = await GetTokenAsync();
             if (string.IsNullOrEmpty(token)) return DefaultDraft(req.TargetDate);
 
-            // ИСПРАВЛЕННЫЙ ПРОМПТ: Упор на равномерность
             var prompt = $"Ты профессиональный коуч. Составь план достижения цели: '{req.Title}'. " +
                          $"Результатом должно быть: {req.MeasurableResult}. Дедлайн: {req.TargetDate:yyyy-MM-dd}. " +
                          $"Напиши 15-25 шагов, в зависимости от дедлайна. РАСПРЕДЕЛИ ИХ РАВНОМЕРНО от сегодняшнего дня до {req.TargetDate:yyyy-MM-dd}. " +
@@ -80,7 +79,6 @@ namespace Hive.Api.Services
                 var steps = new List<TaskDraftResponse>();
                 var lines = rawText.Split(new[] { ';', '\n' }, StringSplitOptions.RemoveEmptyEntries);
 
-                // ВЫЧИСЛЯЕМ ШАГ ДАТЫ САМИ (если ИИ ошибется)
                 DateTime start = DateTime.UtcNow;
                 TimeSpan totalDuration = req.TargetDate - start;
                 double intervalDays = totalDuration.TotalDays / 20;
@@ -93,7 +91,6 @@ namespace Hive.Api.Services
                     var parts = line.Split('|');
                     string title = parts[0].Trim();
 
-                    // Если ИИ не вернул дату или она некорректна, рассчитываем её математически
                     DateTime taskDate = start.AddDays(intervalDays * (i + 1));
 
                     if (parts.Length > 1 && DateTime.TryParse(parts[1].Trim(), out DateTime aiDate))
@@ -114,32 +111,18 @@ namespace Hive.Api.Services
             var token = await GetTokenAsync();
             if (string.IsNullOrEmpty(token)) return null;
 
-            // Определяем специфичные инструкции для каждого формата
             string formatInstructions = format switch
             {
-                "multiple" => "Каждый вопрос должен иметь несколько правильных ответов. Поле 'correctAnswer' ДОЛЖНО быть массивом строк (например, [\"ответ1\", \"ответ2\"]).",
-                "boolean" => "Каждый вопрос должен быть в формате 'Верно/Неверно'. Поле 'options' всегда должно быть [\"Верно\", \"Неверно\"]. 'correctAnswer' - одна строка.",
-                _ => "Каждый вопрос должен иметь только один правильный ответ. Поле 'correctAnswer' должно быть строкой."
+                "multiple" => "Поле 'correctAnswer' ДОЛЖНО быть массивом строк (например, [\"A\", \"B\"]).",
+                "boolean" => "Поле 'options' всегда [\"Верно\", \"Неверно\"]. 'correctAnswer' - строка.",
+                _ => "Поле 'correctAnswer' должно быть строкой."
             };
 
-            // Формируем промпт
-            var prompt = $@"Ты профессиональный преподаватель. Составь учебный тест на тему: '{topic}'.
-Количество вопросов: {questionsCount}.
-Формат вопросов: {format}.
-
-ИНСТРУКЦИИ:
-1. {formatInstructions}
-2. Ответ должен быть СТРОГО в формате JSON массива объектов.
-3. Не пиши никакого текста, приветствий или пояснений до и после JSON.
-4. Все тексты внутри JSON должны быть на русском языке.
-
-СТРУКТУРА ОБЪЕКТА:
-{{
-  ""question"": ""текст вопроса"",
-  ""options"": [""вариант 1"", ""вариант 2"", ""вариант 3""],
-  ""correctAnswer"": ""строка_или_массив"",
-  ""type"": ""{format}""
-}}";
+            var prompt = $@"Ты экзаменатор. Составь тест строго на тему: '{topic}'. Кол-во вопросов: {questionsCount}. Формат: {format}.
+        {formatInstructions}
+        Верни ТОЛЬКО массив JSON. Без вступлений и лишнего текста. 
+        Внутри текстов используй только одинарные кавычки (').
+        Структура: {{""question"":""..."",""options"":[""..."",""..."",""..."",""..."",""..."",""..."",""..."",""..."",""...""],""correctAnswer"":""..."",""type"":""{format}""}}";
 
             try
             {
@@ -147,11 +130,10 @@ namespace Hive.Api.Services
                 {
                     model = "GigaChat",
                     messages = new[] { new { role = "user", content = prompt } },
-                    temperature = 0.7 // Немного креативности для разнообразия вопросов
+                    temperature = 0.1 // Снижаем температуру для более строгого следования формату
                 };
 
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
                 var response = await _httpClient.PostAsync("https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
                     new StringContent(JsonConvert.SerializeObject(requestBody), Encoding.UTF8, "application/json"));
 
@@ -159,16 +141,10 @@ namespace Hive.Api.Services
                 var result = JsonConvert.DeserializeObject<dynamic>(content);
                 string rawJson = result?.choices[0]?.message?.content ?? "";
 
-                // Очистка от markdown-разметки (```json ... ```), которую часто добавляют нейросети
-                rawJson = Regex.Replace(rawJson, "```json|```", "").Trim();
-
-                return rawJson;
+                // ВАЖНО: Используем очистку здесь!
+                return RobustJsonRepair(rawJson);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[AI ERROR]: {ex.Message}");
-                return null;
-            }
+            catch { return null; }
         }
 
 
@@ -297,47 +273,34 @@ namespace Hive.Api.Services
         private string? RobustJsonRepair(string input)
         {
             if (string.IsNullOrWhiteSpace(input)) return null;
+
             try
             {
-                // 1. Убираем Markdown
+                // 1. Убираем markdown
                 string cleaned = Regex.Replace(input, @"```json|```", "").Trim();
 
-                // 2. УДАЛЯЕМ КОММЕНТАРИИ (те самые // которые сломали парсинг)
-                cleaned = Regex.Replace(cleaned, @"//.*$", "", RegexOptions.Multiline);
-                cleaned = Regex.Replace(cleaned, @"/\*.*?\*/", "", RegexOptions.Singleline);
-
-                // 3. Находим границы массива
+                // 2. Ищем границы массива [ ... ]
                 int startIndex = cleaned.IndexOf('[');
-                if (startIndex == -1) return null;
-                cleaned = cleaned.Substring(startIndex);
+                int endIndex = cleaned.LastIndexOf(']');
 
-                // 4. Чиним обрывы
-                if (!cleaned.EndsWith("]"))
-                {
-                    int lastGoodObjectEnd = cleaned.LastIndexOf('}');
-                    if (lastGoodObjectEnd != -1) cleaned = cleaned.Substring(0, lastGoodObjectEnd + 1) + "]";
-                    else return null;
-                }
+                if (startIndex == -1 || endIndex == -1) return null;
+                cleaned = cleaned.Substring(startIndex, (endIndex - startIndex) + 1);
 
-                // 5. Удаляем мусорные символы, которые ИИ лепит в строки
-                cleaned = cleaned.Replace("\n", " ").Replace("\r", " ");
+                // 3. Удаляем невидимые символы и переносы строк внутри JSON
+                cleaned = Regex.Replace(cleaned, @"[\x00-\x1F\x7F]", " ");
 
-                // Убираем "; в конце строк (ошибка из лога)
-                cleaned = cleaned.Replace("\";", "\"");
+                // 4. Фикс: GigaChat иногда пишет "..." , вместо "..."
+                // Удаляем пробелы между закрывающей кавычкой и запятой/скобкой
+                cleaned = Regex.Replace(cleaned, @"\s*""\s*", "\"");
 
-                // Фикс запятых
-                cleaned = Regex.Replace(cleaned, @"}\s*{", "},{");
-                cleaned = Regex.Replace(cleaned, @",\s*]", "]");
-                cleaned = Regex.Replace(cleaned, @",\s*}", "}");
-
-                // Убираем лишние одинарные кавычки в значениях
-                cleaned = Regex.Replace(cleaned, @":\s*""'([^""]+)'""", @":""$1""");
-
-                using (JsonDocument.Parse(cleaned)) return cleaned;
+                // 5. Попытка десериализации через Newtonsoft (он мягче, чем System.Text.Json)
+                // Если проходит - значит JSON валидный
+                var obj = JsonConvert.DeserializeObject(cleaned);
+                return JsonConvert.SerializeObject(obj); // Возвращаем чистую строку без мусора
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[CLEANUP FAILED]: {ex.Message}");
+                Console.WriteLine($"[JSON REPAIR FAILED]: {ex.Message}");
                 return null;
             }
         }

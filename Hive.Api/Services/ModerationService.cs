@@ -11,7 +11,6 @@ namespace Hive.Api.Services
         {
             try
             {
-                // Проверяем наличие папки, чтобы не было крэша
                 if (Directory.Exists("./Resources/Filters"))
                 {
                     BadWordFilter.Instance.LoadFiles(true, BWFConstants.BWF_LTR);
@@ -28,14 +27,11 @@ namespace Hive.Api.Services
         {
             if (string.IsNullOrWhiteSpace(text)) return true;
 
-            // Если библиотека загружена — используем её
             if (_isLibraryLoaded)
             {
                 return !BadWordFilter.Instance.Contains(text);
             }
-
-            // Запасной вариант: простейший фильтр (можно расширить список)
-            var blackList = new[] { "мат1", "мат2" }; // Добавьте сюда слова, если нужно
+            var blackList = new[] { "дура", "тупой" };
             return !blackList.Any(badWord => text.ToLower().Contains(badWord));
         }
     }

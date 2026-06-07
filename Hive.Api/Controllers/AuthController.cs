@@ -38,10 +38,10 @@ namespace Hive.Api.Controllers
                 user.Email,
                 "None",
                 user.AvatarUrl,
-                null, // MatchTeaching
-                null, // MatchLearning
-                false, // IsVerified
-                0 // Rating
+                null,
+                null, 
+                false, 
+                0 
             )));
         }
 
@@ -75,7 +75,8 @@ namespace Hive.Api.Controllers
             };
             var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_config["JwtSettings:Secret"] ?? "default_secret_key_32_chars_long_min"));
             var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
-            var token = new JwtSecurityToken(_config["JwtSettings:Issuer"], _config["JwtSettings:Audience"], claims, expires: DateTime.Now.AddDays(7), signingCredentials: creds);
+            var token = new JwtSecurityToken(_config["JwtSettings:Issuer"], _config["JwtSettings:Audience"], claims, expires: DateTime.Now.AddDays(7),
+                signingCredentials: creds);
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
     }

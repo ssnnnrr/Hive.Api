@@ -147,27 +147,22 @@ namespace Hive.Api.Controllers
             var group = await _context.Groups.Include(g => g.RoadmapSteps).FirstOrDefaultAsync(g => g.Id == groupId);
             if (group == null) return NotFound();
 
-            // Ставим флаг: Учитель подтвердил, что ЕГО УЧЕНИК закончил
             if (group.OwnerId == CurrentUserId) group.PartnerFinished = true;
             else group.OwnerFinished = true;
 
             bool isFullyFinished = group.OwnerFinished && group.PartnerFinished;
-
             if (isFullyFinished)
             {
-                // Только если ОБА закончили, переносим всё в архив
                 var steps = group.RoadmapSteps.Where(s => !s.IsArchived).ToList();
                 foreach (var s in steps) s.IsArchived = true;
             }
 
             await _context.SaveChangesAsync();
 
-            // SignalR: Просто говорим всем обновить данные. 
-            // Фронтенд сам поймет, нужно ли показывать рейтинг, проверив оба флага.
+            // Оповещаем SignalR
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("RoadmapUpdated");
             return Ok();
         }
-
 
         [HttpPost("{groupId}/reject-completion")]
         public async Task<IActionResult> RejectCompletion(long groupId)
@@ -175,11 +170,50 @@ namespace Hive.Api.Controllers
             var group = await _context.Groups.Include(g => g.ChatMessages).FirstOrDefaultAsync(g => g.Id == groupId);
             if (group == null) return NotFound();
 
-            // Просто удаляем сообщение с кнопками, учитель считает, что ученик еще не готов
+            // 1. Удаляем запрос на завершение
             var oldMessages = group.ChatMessages.Where(m => m.Content.StartsWith("[COMPLETION_REQUEST]")).ToList();
             _context.ChatMessages.RemoveRange(oldMessages);
 
+            // 2. Добавляем системное сообщение об отказе
+            var user = await _context.Users.FindAsync(CurrentUserId);
+            _context.ChatMessages.Add(new ChatMessage
+            {
+                GroupId = groupId,
+                SenderId = CurrentUserId,
+                Content = $"❌ Учитель считает, что обучение нужно продолжить. План обучения еще не выполнен полностью.",
+                SentAt = DateTime.UtcNow
+            });
+
             await _context.SaveChangesAsync();
+
+            // 3. SignalR: обновляем данные у всех
+            await _hubContext.Clients.Group(groupId.ToString()).SendAsync("RoadmapUpdated");
+            return Ok();
+        }
+
+        [HttpPost("{groupId}/confirm-restart")]
+        public async Task<IActionResult> ConfirmRestart(long groupId)
+        {
+            var group = await _context.Groups.Include(g => g.ChatMessages).FirstOrDefaultAsync(g => g.Id == groupId);
+            if (group == null) return NotFound();
+
+            group.OwnerFinished = false;
+            group.PartnerFinished = false;
+
+            var restarts = group.ChatMessages.Where(m => m.Content.StartsWith("[RESTART_PROPOSAL]")).ToList();
+            _context.ChatMessages.RemoveRange(restarts);
+
+            _context.ChatMessages.Add(new ChatMessage
+            {
+                GroupId = groupId,
+                SenderId = CurrentUserId,
+                Content = "🔄 Обмен навыками возобновлен! План обучения очищен и готов к новым задачам.",
+                SentAt = DateTime.UtcNow
+            });
+
+            await _context.SaveChangesAsync();
+
+            // SignalR: Разблокируем чат у обоих
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("RoadmapUpdated");
             return Ok();
         }
@@ -212,33 +246,6 @@ namespace Hive.Api.Controllers
             return Ok();
         }
 
-        [HttpPost("{groupId}/confirm-restart")]
-        public async Task<IActionResult> ConfirmRestart(long groupId)
-        {
-            var group = await _context.Groups.Include(g => g.ChatMessages).FirstOrDefaultAsync(g => g.Id == groupId);
-            if (group == null) return NotFound();
-
-            // СБРОС ФЛАГОВ - чат снова открыт
-            group.OwnerFinished = false;
-            group.PartnerFinished = false;
-
-            // Удаляем сообщения о перезапуске
-            var restarts = group.ChatMessages.Where(m => m.Content.StartsWith("[RESTART_PROPOSAL]")).ToList();
-            _context.ChatMessages.RemoveRange(restarts);
-
-            // Системное уведомление в чат
-            _context.ChatMessages.Add(new ChatMessage
-            {
-                GroupId = groupId,
-                SenderId = CurrentUserId,
-                Content = "🔄 Обмен навыками возобновлен! Можно ставить новые задачи.",
-                SentAt = DateTime.UtcNow
-            });
-
-            await _context.SaveChangesAsync();
-            await _hubContext.Clients.Group(groupId.ToString()).SendAsync("RoadmapUpdated");
-            return Ok();
-        }
 
         [HttpPost("direct/{targetUserId}")]
         public async Task<IActionResult> GetOrCreateDirectChat(long targetUserId)

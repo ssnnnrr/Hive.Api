@@ -73,7 +73,6 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             ValidateAudience = false
         };
 
-        // --- ÄÎÁÀÂÜ ÝÒÎÒ ÁËÎÊ ÄËß SIGNALR ---
         options.Events = new JwtBearerEvents
         {
             OnMessageReceived = context =>

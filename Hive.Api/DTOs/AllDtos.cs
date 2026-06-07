@@ -11,23 +11,28 @@ namespace Hive.Api.DTOs
     public record RegisterRequest(string Username, string Email, string Password);
     public record AuthResponse(string Token, UserDto User);
     public record UserDto(
-    long Id,
-    string Username,
-    string Email,
-    string SynergyLevel,
-    string? AvatarUrl,
-    List<string>? MatchTeaching = null,
-    List<string>? MatchLearning = null,
-    bool IsVerified = false,
-    double Rating = 0// Добавьте это поле
-);
-    public record UserProfileDto(long Id, string Username, string Email, List<UserSkillDto> Skills, List<ReviewDto> Reviews, double Rating, string RelationshipStatus, string? AvatarUrl);
+        long Id,
+        string Username,
+        string Email,
+        string SynergyLevel,
+        string? AvatarUrl,
+        List<string>? MatchTeaching = null,
+        List<string>? MatchLearning = null,
+        bool IsVerified = false,
+        double Rating = 0
+    );
+    public record UserProfileDto(
+        long Id, string Username, 
+        string Email, List<UserSkillDto> Skills, 
+        List<ReviewDto> Reviews, double Rating,
+        string RelationshipStatus, string? AvatarUrl
+    );
     public record UserSkillDto(
-    long SkillId,
-    string SkillName,
-    string Type,
-    bool IsAiVerified // Добавлено для Этапа 1
-);
+        long SkillId,
+        string SkillName,
+        string Type,
+        bool IsAiVerified 
+    );
     public record SkillDto(long Id, string Name);
     public record SyncSkillsRequest(List<long> SkillIds, string Type);
     public record UpdateProfileRequest(string Username, string? NewPassword, string? ConfirmPassword, bool IsPrivate, string? AvatarUrl);
@@ -136,7 +141,8 @@ namespace Hive.Api.DTOs
     string? InstructionUrl,
     bool IsTest = false,
     bool IsRequired = true,
-    int MaxAttempts = 3 // Это поле учитель заполнит в интерфейсе
+    int MaxAttempts = 3,
+    string? TestData = null// Это поле учитель заполнит в интерфейсе
 );
     // Для обновления статуса учеником (сдача работы)
     public record SubmitRoadmapStepRequest(

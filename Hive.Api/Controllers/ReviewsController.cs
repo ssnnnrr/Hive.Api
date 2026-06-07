@@ -31,7 +31,6 @@ namespace Hive.Api.Controllers
             if (CurrentUserId == req.ReviewedId)
                 return BadRequest("Нельзя оценивать самого себя.");
 
-            // Этап 1: Проверка на мат
             if (!_moderation.IsTextClean(req.Comment))
             {
                 return BadRequest("Отзыв содержит недопустимую лексику.");
