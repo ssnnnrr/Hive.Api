@@ -144,11 +144,20 @@ namespace Hive.Api.Controllers
         [HttpPost("{groupId}/confirm-partner-completion")]
         public async Task<IActionResult> ConfirmPartnerCompletion(long groupId)
         {
-            var group = await _context.Groups.Include(g => g.RoadmapSteps).FirstOrDefaultAsync(g => g.Id == groupId);
+            var group = await _context.Groups
+                .Include(g => g.RoadmapSteps)
+                .Include(g => g.ChatMessages) // Добавьте Include
+                .FirstOrDefaultAsync(g => g.Id == groupId);
+
             if (group == null) return NotFound();
 
             if (group.OwnerId == CurrentUserId) group.PartnerFinished = true;
             else group.OwnerFinished = true;
+
+            // ВАЖНО: Удаляем системное сообщение с кнопками, чтобы оно исчезло из чата
+            var completionMessages = group.ChatMessages
+                .Where(m => m.Content.StartsWith("[COMPLETION_REQUEST]")).ToList();
+            _context.ChatMessages.RemoveRange(completionMessages);
 
             bool isFullyFinished = group.OwnerFinished && group.PartnerFinished;
             if (isFullyFinished)
@@ -159,9 +168,8 @@ namespace Hive.Api.Controllers
 
             await _context.SaveChangesAsync();
 
-            // Оповещаем SignalR
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("RoadmapUpdated");
-            return Ok();
+            return Ok(new { isFullyFinished }); // Возвращаем статус
         }
 
         [HttpPost("{groupId}/reject-completion")]
@@ -170,23 +178,33 @@ namespace Hive.Api.Controllers
             var group = await _context.Groups.Include(g => g.ChatMessages).FirstOrDefaultAsync(g => g.Id == groupId);
             if (group == null) return NotFound();
 
-            // 1. Удаляем запрос на завершение
+            // ВАЖНО: Сбрасываем флаг завершения тому, кто НЕ является текущим пользователем (учителем)
+            // Если текущий юзер — Owner (учитель), значит сбрасываем флаг у Partner
+            if (group.OwnerId == CurrentUserId)
+            {
+                group.PartnerFinished = false;
+            }
+            else
+            {
+                group.OwnerFinished = false;
+            }
+
+            // Удаляем запрос на завершение из чата
             var oldMessages = group.ChatMessages.Where(m => m.Content.StartsWith("[COMPLETION_REQUEST]")).ToList();
             _context.ChatMessages.RemoveRange(oldMessages);
 
-            // 2. Добавляем системное сообщение об отказе
-            var user = await _context.Users.FindAsync(CurrentUserId);
+            // Добавляем системное сообщение об отказе
             _context.ChatMessages.Add(new ChatMessage
             {
                 GroupId = groupId,
                 SenderId = CurrentUserId,
-                Content = $"❌ Учитель считает, что обучение нужно продолжить. План обучения еще не выполнен полностью.",
+                Content = $"❌ Учитель отклонил запрос на завершение. Обучение продолжается.",
                 SentAt = DateTime.UtcNow
             });
 
             await _context.SaveChangesAsync();
 
-            // 3. SignalR: обновляем данные у всех
+            // SignalR оповестит фронтенд, что данные изменились
             await _hubContext.Clients.Group(groupId.ToString()).SendAsync("RoadmapUpdated");
             return Ok();
         }
