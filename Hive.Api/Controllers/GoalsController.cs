@@ -330,7 +330,6 @@ namespace Hive.Api.Controllers
             return Ok();
         }
 
-        // Hive.Api/Controllers/GoalsController.cs
 
         [HttpPost("materials/upload")]
         [Consumes("multipart/form-data")] // Указываем тип контента явно
@@ -391,7 +390,6 @@ namespace Hive.Api.Controllers
                 _context.Materials.Add(material);
                 await _context.SaveChangesAsync();
 
-                // Подгружаем заголовок задачи для ответа, если она есть
                 string? taskTitle = null;
                 if (req.TaskId.HasValue)
                 {

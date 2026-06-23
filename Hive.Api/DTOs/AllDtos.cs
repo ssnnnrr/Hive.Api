@@ -56,11 +56,11 @@ namespace Hive.Api.DTOs
 
     public class UploadMaterialRequest
     {
-        public int GoalId { get; set; }
+        public long GoalId { get; set; }
         public string Title { get; set; }
         public string? Content { get; set; } // Для ссылок
         public IFormFile? File { get; set; } // Для файлов
-        public int? TaskId { get; set; }
+        public long? TaskId { get; set; }
     }
 
     public record TaskResponse(
@@ -98,7 +98,7 @@ namespace Hive.Api.DTOs
         public string CreatorName { get; set; }
         public string? CreatorAvatarUrl { get; set; }
         public DateTime CreatedAt { get; set; }
-        public int? TaskId { get; set; }
+        public long? TaskId { get; set; }
         public string? TaskTitle { get; set; }
 
         // Пустой конструктор
